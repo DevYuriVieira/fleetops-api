@@ -12,7 +12,6 @@ public sealed class Driver : AggregateRoot
     public string Email { get; private set; }
     public string PhoneNumber { get; private set; }
     public DriverStatus Status { get; private set; }
-    public Guid? CurrentVehicleId { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset? UpdatedAt { get; private set; }
 
@@ -102,13 +101,6 @@ public sealed class Driver : AggregateRoot
             throw new InvalidDriverStateException("Driver is already suspended.");
         }
 
-        if (CurrentVehicleId.HasValue)
-        {
-            var previousVehicleId = CurrentVehicleId.Value;
-            CurrentVehicleId = null;
-            RaiseDomainEvent(new VehicleUnassignedFromDriverDomainEvent(Id, previousVehicleId, DateTimeOffset.UtcNow));
-        }
-
         Status = DriverStatus.Suspended;
         UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -122,53 +114,9 @@ public sealed class Driver : AggregateRoot
             throw new InvalidDriverStateException("Driver is already inactive.");
         }
 
-        if (CurrentVehicleId.HasValue)
-        {
-            var previousVehicleId = CurrentVehicleId.Value;
-            CurrentVehicleId = null;
-            RaiseDomainEvent(new VehicleUnassignedFromDriverDomainEvent(Id, previousVehicleId, DateTimeOffset.UtcNow));
-        }
-
         Status = DriverStatus.Inactive;
         UpdatedAt = DateTimeOffset.UtcNow;
 
         RaiseDomainEvent(new DriverDeactivatedDomainEvent(Id, UpdatedAt.Value));
-    }
-
-    public void AssignVehicle(Guid vehicleId)
-    {
-        if (vehicleId == Guid.Empty)
-        {
-            throw new DomainValidationException("Vehicle identifier cannot be empty.");
-        }
-
-        if (Status != DriverStatus.Active)
-        {
-            throw new InvalidDriverStateException("Only active drivers can be assigned to a vehicle.");
-        }
-
-        if (CurrentVehicleId == vehicleId)
-        {
-            return;
-        }
-
-        CurrentVehicleId = vehicleId;
-        UpdatedAt = DateTimeOffset.UtcNow;
-
-        RaiseDomainEvent(new VehicleAssignedToDriverDomainEvent(Id, vehicleId, UpdatedAt.Value));
-    }
-
-    public void UnassignVehicle()
-    {
-        if (!CurrentVehicleId.HasValue)
-        {
-            throw new InvalidDriverStateException("Driver has no vehicle assigned.");
-        }
-
-        var previousVehicleId = CurrentVehicleId.Value;
-        CurrentVehicleId = null;
-        UpdatedAt = DateTimeOffset.UtcNow;
-
-        RaiseDomainEvent(new VehicleUnassignedFromDriverDomainEvent(Id, previousVehicleId, UpdatedAt.Value));
     }
 }

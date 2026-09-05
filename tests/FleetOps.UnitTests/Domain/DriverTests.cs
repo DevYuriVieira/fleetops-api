@@ -34,7 +34,13 @@ public class DriverTests
         Assert.Equal("jane.smith@fleetops.com", driver.Email);
         Assert.Equal("+9876543210", driver.PhoneNumber);
         Assert.Equal(DriverStatus.Active, driver.Status);
-        Assert.Null(driver.CurrentVehicleId);
+    }
+
+    [Fact]
+    public void Driver_ShouldNotExposeCurrentVehicleId()
+    {
+        var property = typeof(Driver).GetProperty("CurrentVehicleId");
+        Assert.Null(property);
     }
 
     [Theory]
@@ -57,19 +63,15 @@ public class DriverTests
     }
 
     [Fact]
-    public void Suspend_ShouldChangeStatusToSuspendedAndUnassignVehicle()
+    public void Suspend_ShouldChangeStatusToSuspendedAndRaiseDomainEvent()
     {
         var driver = CreateValidDriver();
-        var vehicleId = Guid.NewGuid();
-        driver.AssignVehicle(vehicleId);
         driver.ClearDomainEvents();
 
         driver.Suspend("License renewal pending");
 
         Assert.Equal(DriverStatus.Suspended, driver.Status);
-        Assert.Null(driver.CurrentVehicleId);
         Assert.Contains(driver.DomainEvents, e => e is DriverSuspendedDomainEvent);
-        Assert.Contains(driver.DomainEvents, e => e is VehicleUnassignedFromDriverDomainEvent);
     }
 
     [Fact]
@@ -82,17 +84,14 @@ public class DriverTests
     }
 
     [Fact]
-    public void Deactivate_ShouldChangeStatusToInactiveAndUnassignVehicle()
+    public void Deactivate_ShouldChangeStatusToInactiveAndRaiseDomainEvent()
     {
         var driver = CreateValidDriver();
-        var vehicleId = Guid.NewGuid();
-        driver.AssignVehicle(vehicleId);
         driver.ClearDomainEvents();
 
         driver.Deactivate();
 
         Assert.Equal(DriverStatus.Inactive, driver.Status);
-        Assert.Null(driver.CurrentVehicleId);
         Assert.Contains(driver.DomainEvents, e => e is DriverDeactivatedDomainEvent);
     }
 
@@ -115,41 +114,5 @@ public class DriverTests
         var driver = CreateValidDriver();
 
         Assert.Throws<InvalidDriverStateException>(() => driver.Activate());
-    }
-
-    [Fact]
-    public void AssignVehicle_ShouldSetVehicleId_WhenDriverIsActive()
-    {
-        var driver = CreateValidDriver();
-        var vehicleId = Guid.NewGuid();
-        driver.ClearDomainEvents();
-
-        driver.AssignVehicle(vehicleId);
-
-        Assert.Equal(vehicleId, driver.CurrentVehicleId);
-        Assert.Contains(driver.DomainEvents, e => e is VehicleAssignedToDriverDomainEvent);
-    }
-
-    [Fact]
-    public void AssignVehicle_ShouldThrowInvalidStateException_WhenDriverIsSuspended()
-    {
-        var driver = CreateValidDriver();
-        driver.Suspend("Medical leave");
-
-        Assert.Throws<InvalidDriverStateException>(() => driver.AssignVehicle(Guid.NewGuid()));
-    }
-
-    [Fact]
-    public void UnassignVehicle_ShouldClearVehicleIdAndRaiseDomainEvent()
-    {
-        var driver = CreateValidDriver();
-        var vehicleId = Guid.NewGuid();
-        driver.AssignVehicle(vehicleId);
-        driver.ClearDomainEvents();
-
-        driver.UnassignVehicle();
-
-        Assert.Null(driver.CurrentVehicleId);
-        Assert.Contains(driver.DomainEvents, e => e is VehicleUnassignedFromDriverDomainEvent);
     }
 }
