@@ -102,15 +102,36 @@ public sealed class RouteUseCasesTests
         return driver;
     }
 
-    private Delivery CreateTestDelivery()
+    private Delivery CreateTestDelivery(DeliveryStatus status = DeliveryStatus.Pending)
     {
-        return Delivery.Create(
+        var delivery = Delivery.Create(
             Guid.NewGuid(),
             TrackingCode.Create("BR123456789XP"),
             CreateSampleAddress("Rua X", "1"),
             CreateSampleAddress("Rua Y", "2"),
             DeliveryPriority.Standard,
             50m);
+
+        if (status is DeliveryStatus.Assigned or DeliveryStatus.InTransit or DeliveryStatus.Delivered)
+        {
+            delivery.Assign(Guid.NewGuid(), Guid.NewGuid(), DateTimeOffset.UtcNow.AddHours(2));
+        }
+
+        if (status is DeliveryStatus.InTransit or DeliveryStatus.Delivered)
+        {
+            delivery.Start();
+        }
+
+        if (status == DeliveryStatus.Delivered)
+        {
+            delivery.Complete(DateTimeOffset.UtcNow.AddHours(1));
+        }
+        else if (status == DeliveryStatus.Cancelled)
+        {
+            delivery.Cancel("Cancelled for test");
+        }
+
+        return delivery;
     }
 
     [Fact]
@@ -213,6 +234,69 @@ public sealed class RouteUseCasesTests
     {
         var route = CreateTestRoute();
         var delivery = CreateTestDelivery();
+
+        await _routeRepository.AddAsync(route);
+        await _deliveryRepository.AddAsync(delivery);
+
+        var useCase = new AddDeliveryToRouteUseCase(_routeRepository, _deliveryRepository, _unitOfWork);
+        var command = new AddDeliveryToRouteCommand(route.Id, delivery.Id);
+
+        var result = await useCase.ExecuteAsync(command);
+
+        Assert.Contains(delivery.Id, result.DeliveryIds);
+        Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+    }
+
+    [Fact]
+    public async Task AddDeliveryToRoute_WhenDeliveryIsCancelled_ShouldThrowConflictException()
+    {
+        var route = CreateTestRoute();
+        var delivery = CreateTestDelivery(DeliveryStatus.Cancelled);
+
+        await _routeRepository.AddAsync(route);
+        await _deliveryRepository.AddAsync(delivery);
+
+        var useCase = new AddDeliveryToRouteUseCase(_routeRepository, _deliveryRepository, _unitOfWork);
+        var command = new AddDeliveryToRouteCommand(route.Id, delivery.Id);
+
+        await Assert.ThrowsAsync<ConflictException>(() => useCase.ExecuteAsync(command));
+    }
+
+    [Fact]
+    public async Task AddDeliveryToRoute_WhenDeliveryIsDelivered_ShouldThrowConflictException()
+    {
+        var route = CreateTestRoute();
+        var delivery = CreateTestDelivery(DeliveryStatus.Delivered);
+
+        await _routeRepository.AddAsync(route);
+        await _deliveryRepository.AddAsync(delivery);
+
+        var useCase = new AddDeliveryToRouteUseCase(_routeRepository, _deliveryRepository, _unitOfWork);
+        var command = new AddDeliveryToRouteCommand(route.Id, delivery.Id);
+
+        await Assert.ThrowsAsync<ConflictException>(() => useCase.ExecuteAsync(command));
+    }
+
+    [Fact]
+    public async Task AddDeliveryToRoute_WhenDeliveryIsInTransit_ShouldThrowConflictException()
+    {
+        var route = CreateTestRoute();
+        var delivery = CreateTestDelivery(DeliveryStatus.InTransit);
+
+        await _routeRepository.AddAsync(route);
+        await _deliveryRepository.AddAsync(delivery);
+
+        var useCase = new AddDeliveryToRouteUseCase(_routeRepository, _deliveryRepository, _unitOfWork);
+        var command = new AddDeliveryToRouteCommand(route.Id, delivery.Id);
+
+        await Assert.ThrowsAsync<ConflictException>(() => useCase.ExecuteAsync(command));
+    }
+
+    [Fact]
+    public async Task AddDeliveryToRoute_WhenDeliveryIsAssigned_ShouldAddSuccessfully()
+    {
+        var route = CreateTestRoute();
+        var delivery = CreateTestDelivery(DeliveryStatus.Assigned);
 
         await _routeRepository.AddAsync(route);
         await _deliveryRepository.AddAsync(delivery);
