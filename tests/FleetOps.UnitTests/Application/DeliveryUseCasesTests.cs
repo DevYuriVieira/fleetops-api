@@ -120,6 +120,23 @@ public sealed class DeliveryUseCasesTests
     }
 
     [Fact]
+    public async Task CreateDelivery_WhenCancellationRequested_ShouldThrowOperationCanceledException()
+    {
+        var useCase = new CreateDeliveryUseCase(_deliveryRepository, _unitOfWork);
+        var command = new CreateDeliveryCommand(
+            "BR998877665XP",
+            CreateSampleAddressDto(),
+            CreateSampleAddressDto(),
+            "Standard",
+            20m);
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => useCase.ExecuteAsync(command, cts.Token));
+    }
+
+    [Fact]
     public async Task CreateDelivery_WithInvalidPriority_ShouldThrowValidationException()
     {
         var useCase = new CreateDeliveryUseCase(_deliveryRepository, _unitOfWork);

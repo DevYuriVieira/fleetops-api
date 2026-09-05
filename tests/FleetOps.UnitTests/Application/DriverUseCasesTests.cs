@@ -58,6 +58,22 @@ public sealed class DriverUseCasesTests
     }
 
     [Fact]
+    public async Task RegisterDriver_WhenCancellationRequested_ShouldThrowOperationCanceledException()
+    {
+        var useCase = new RegisterDriverUseCase(_driverRepository, _unitOfWork);
+        var command = new RegisterDriverCommand(
+            "Maria Santos",
+            "CNH87654321",
+            "maria.santos@fleetops.com",
+            "+5511977776666");
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => useCase.ExecuteAsync(command, cts.Token));
+    }
+
+    [Fact]
     public async Task RegisterDriver_WhenLicenseAlreadyExists_ShouldThrowConflictException()
     {
         var existing = CreateTestDriver();
