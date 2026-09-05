@@ -95,6 +95,25 @@ public sealed class MaintenanceUseCasesTests
     }
 
     [Fact]
+    public async Task ScheduleMaintenance_WhenCancellationRequested_ShouldThrowOperationCanceledException()
+    {
+        var vehicle = CreateTestVehicle();
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var useCase = new ScheduleMaintenanceUseCase(_maintenanceRepository, _vehicleRepository, _unitOfWork);
+        var command = new ScheduleMaintenanceCommand(
+            vehicle.Id,
+            "Preventive",
+            "Periodic brake inspection",
+            DateTimeOffset.UtcNow.AddDays(3));
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => useCase.ExecuteAsync(command, cts.Token));
+    }
+
+    [Fact]
     public async Task ScheduleMaintenance_WhenVehicleNotFound_ShouldThrowNotFoundException()
     {
         var useCase = new ScheduleMaintenanceUseCase(_maintenanceRepository, _vehicleRepository, _unitOfWork);
@@ -181,6 +200,10 @@ public sealed class MaintenanceUseCasesTests
         Assert.Equal(startTime, result.StartedAt);
         Assert.Equal(VehicleStatus.UnderMaintenance, vehicle.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _maintenanceRepository.UpdateCallCount);
+        Assert.True(_maintenanceRepository.WasUpdated(maintenance.Id));
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -219,6 +242,10 @@ public sealed class MaintenanceUseCasesTests
         Assert.Equal(completedTime, result.CompletedAt);
         Assert.Equal(VehicleStatus.Active, vehicle.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _maintenanceRepository.UpdateCallCount);
+        Assert.True(_maintenanceRepository.WasUpdated(maintenance.Id));
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -253,6 +280,8 @@ public sealed class MaintenanceUseCasesTests
         Assert.Equal(MaintenanceStatus.Cancelled.ToString(), result.Status);
         Assert.Equal("Scheduled by mistake", result.CancellationReason);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _maintenanceRepository.UpdateCallCount);
+        Assert.True(_maintenanceRepository.WasUpdated(maintenance.Id));
     }
 
     [Fact]
@@ -272,6 +301,10 @@ public sealed class MaintenanceUseCasesTests
         Assert.Equal(MaintenanceStatus.Cancelled.ToString(), result.Status);
         Assert.Equal(VehicleStatus.Active, vehicle.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _maintenanceRepository.UpdateCallCount);
+        Assert.True(_maintenanceRepository.WasUpdated(maintenance.Id));
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]

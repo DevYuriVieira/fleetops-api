@@ -188,6 +188,8 @@ public sealed class DeliveryUseCasesTests
         Assert.Equal(vehicle.Id, result.AssignedVehicleId);
         Assert.Equal(driver.Id, result.AssignedDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _deliveryRepository.UpdateCallCount);
+        Assert.True(_deliveryRepository.WasUpdated(delivery.Id));
     }
 
     [Fact]
@@ -252,6 +254,8 @@ public sealed class DeliveryUseCasesTests
 
         Assert.Equal(DeliveryStatus.InTransit.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _deliveryRepository.UpdateCallCount);
+        Assert.True(_deliveryRepository.WasUpdated(delivery.Id));
     }
 
     [Fact]
@@ -279,6 +283,8 @@ public sealed class DeliveryUseCasesTests
         Assert.Equal(DeliveryStatus.Delivered.ToString(), result.Status);
         Assert.Equal(deliveryTime, result.ActualDeliveryTime);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _deliveryRepository.UpdateCallCount);
+        Assert.True(_deliveryRepository.WasUpdated(delivery.Id));
     }
 
     [Fact]
@@ -305,6 +311,8 @@ public sealed class DeliveryUseCasesTests
         Assert.Equal(DeliveryStatus.Cancelled.ToString(), result.Status);
         Assert.Equal("Customer requested cancellation", result.CancellationReason);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _deliveryRepository.UpdateCallCount);
+        Assert.True(_deliveryRepository.WasUpdated(delivery.Id));
     }
 
     [Fact]

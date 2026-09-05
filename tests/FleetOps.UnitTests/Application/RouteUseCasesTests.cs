@@ -160,6 +160,22 @@ public sealed class RouteUseCasesTests
     }
 
     [Fact]
+    public async Task CreateRoute_WhenCancellationRequested_ShouldThrowOperationCanceledException()
+    {
+        var useCase = new CreateRouteUseCase(_routeRepository, _unitOfWork);
+        var command = new CreateRouteCommand(
+            CreateSampleAddressDto("Origem", "1"),
+            CreateSampleAddressDto("Destino", "2"),
+            DateTimeOffset.UtcNow.AddHours(2),
+            DateTimeOffset.UtcNow.AddHours(6));
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => useCase.ExecuteAsync(command, cts.Token));
+    }
+
+    [Fact]
     public async Task CreateRoute_WhenArrivalBeforeDeparture_ShouldThrowDomainValidationException()
     {
         var useCase = new CreateRouteUseCase(_routeRepository, _unitOfWork);
@@ -193,6 +209,8 @@ public sealed class RouteUseCasesTests
         Assert.Equal(vehicle.Id, result.AssignedVehicleId);
         Assert.Equal(driver.Id, result.AssignedDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -245,6 +263,8 @@ public sealed class RouteUseCasesTests
 
         Assert.Contains(delivery.Id, result.DeliveryIds);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -308,6 +328,8 @@ public sealed class RouteUseCasesTests
 
         Assert.Contains(delivery.Id, result.DeliveryIds);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -327,6 +349,8 @@ public sealed class RouteUseCasesTests
 
         Assert.DoesNotContain(delivery.Id, result.DeliveryIds);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -354,6 +378,8 @@ public sealed class RouteUseCasesTests
         Assert.Equal(RouteStatus.InProgress.ToString(), result.Status);
         Assert.Equal(departure, result.ActualDeparture);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -382,6 +408,8 @@ public sealed class RouteUseCasesTests
         Assert.Equal(RouteStatus.Completed.ToString(), result.Status);
         Assert.Equal(arrival, result.ActualArrival);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]
@@ -396,6 +424,8 @@ public sealed class RouteUseCasesTests
         Assert.Equal(RouteStatus.Cancelled.ToString(), result.Status);
         Assert.Equal("Weather conditions", result.CancellationReason);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _routeRepository.UpdateCallCount);
+        Assert.True(_routeRepository.WasUpdated(route.Id));
     }
 
     [Fact]

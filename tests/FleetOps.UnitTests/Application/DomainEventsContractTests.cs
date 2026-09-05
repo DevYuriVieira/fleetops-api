@@ -1,5 +1,6 @@
 namespace FleetOps.UnitTests.Application;
 
+using FleetOps.Application.Abstractions.Events;
 using FleetOps.Application.UseCases.Vehicles;
 using FleetOps.Domain.Entities;
 using FleetOps.Domain.Enums;
@@ -98,5 +99,32 @@ public sealed class DomainEventsContractTests
             useCase.ExecuteAsync(new ActivateVehicleCommand(vehicle.Id), cts.Token));
 
         Assert.Empty(_dispatcher.DispatchedEvents);
+    }
+
+    [Fact]
+    public async Task UnitOfWork_WhenDispatchFails_ShouldPropagateExceptionAndPreserveEventsInAggregate()
+    {
+        var vehicle = CreateInactiveVehicle();
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var failingDispatcher = new FailingDomainEventDispatcher();
+        var unitOfWork = new InMemoryUnitOfWork(failingDispatcher);
+        unitOfWork.TrackAggregates(() => _vehicleRepository.Entities);
+
+        var useCase = new ActivateVehicleUseCase(_vehicleRepository, unitOfWork);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            useCase.ExecuteAsync(new ActivateVehicleCommand(vehicle.Id)));
+
+        Assert.NotEmpty(vehicle.DomainEvents);
+        Assert.Contains(vehicle.DomainEvents, e => e is VehicleActivatedDomainEvent);
+    }
+
+    private sealed class FailingDomainEventDispatcher : IDomainEventDispatcher
+    {
+        public Task DispatchEventsAsync(IEnumerable<IDomainEvent> events, CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("Simulated domain event dispatch failure.");
+        }
     }
 }

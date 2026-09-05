@@ -113,6 +113,8 @@ public sealed class DriverUseCasesTests
 
         Assert.Equal(DriverStatus.Active.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _driverRepository.UpdateCallCount);
+        Assert.True(_driverRepository.WasUpdated(driver.Id));
     }
 
     [Fact]
@@ -143,6 +145,8 @@ public sealed class DriverUseCasesTests
 
         Assert.Equal(DriverStatus.Suspended.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _driverRepository.UpdateCallCount);
+        Assert.True(_driverRepository.WasUpdated(driver.Id));
     }
 
     [Fact]
@@ -173,6 +177,8 @@ public sealed class DriverUseCasesTests
 
         Assert.Equal(DriverStatus.Inactive.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _driverRepository.UpdateCallCount);
+        Assert.True(_driverRepository.WasUpdated(driver.Id));
     }
 
     [Fact]
