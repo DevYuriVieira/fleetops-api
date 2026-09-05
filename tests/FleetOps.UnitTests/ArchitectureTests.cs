@@ -85,6 +85,7 @@ public class ArchitectureTests
             "Microsoft.EntityFrameworkCore",
             "StackExchange.Redis",
             "RabbitMQ",
+            "MassTransit",
             "Npgsql",
             "MediatR"
         };
