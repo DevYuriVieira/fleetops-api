@@ -160,8 +160,15 @@ public sealed class Vehicle : AggregateRoot
             return;
         }
 
-        CurrentDriverId = driverId;
         UpdatedAt = DateTimeOffset.UtcNow;
+
+        if (CurrentDriverId.HasValue)
+        {
+            var previousDriverId = CurrentDriverId.Value;
+            RaiseDomainEvent(new DriverUnassignedFromVehicleDomainEvent(Id, previousDriverId, UpdatedAt.Value));
+        }
+
+        CurrentDriverId = driverId;
 
         RaiseDomainEvent(new DriverAssignedToVehicleDomainEvent(Id, driverId, UpdatedAt.Value));
     }

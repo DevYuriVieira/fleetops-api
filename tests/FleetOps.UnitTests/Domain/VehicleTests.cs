@@ -157,6 +157,64 @@ public class VehicleTests
     }
 
     [Fact]
+    public void AssignDriver_ShouldThrowInvalidStateException_WhenVehicleIsUnderMaintenance()
+    {
+        var vehicle = CreateValidVehicle();
+        vehicle.SendToMaintenance();
+
+        Assert.Throws<InvalidVehicleStateException>(() => vehicle.AssignDriver(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void AssignDriver_ShouldThrowValidationException_WhenDriverIdIsEmpty()
+    {
+        var vehicle = CreateValidVehicle();
+
+        Assert.Throws<DomainValidationException>(() => vehicle.AssignDriver(Guid.Empty));
+    }
+
+    [Fact]
+    public void AssignDriver_ShouldUnassignPreviousDriverAndAssignNewDriver_WhenReplacingDriver()
+    {
+        var vehicle = CreateValidVehicle();
+        var driverA = Guid.NewGuid();
+        var driverB = Guid.NewGuid();
+
+        vehicle.AssignDriver(driverA);
+        vehicle.ClearDomainEvents();
+
+        vehicle.AssignDriver(driverB);
+
+        Assert.Equal(driverB, vehicle.CurrentDriverId);
+        Assert.Equal(2, vehicle.DomainEvents.Count);
+
+        var events = vehicle.DomainEvents.ToList();
+        var unassignedEvent = Assert.IsType<DriverUnassignedFromVehicleDomainEvent>(events[0]);
+        var assignedEvent = Assert.IsType<DriverAssignedToVehicleDomainEvent>(events[1]);
+
+        Assert.Equal(vehicle.Id, unassignedEvent.VehicleId);
+        Assert.Equal(driverA, unassignedEvent.DriverId);
+
+        Assert.Equal(vehicle.Id, assignedEvent.VehicleId);
+        Assert.Equal(driverB, assignedEvent.DriverId);
+    }
+
+    [Fact]
+    public void AssignDriver_ShouldNotEmitEvents_WhenAssigningSameDriver()
+    {
+        var vehicle = CreateValidVehicle();
+        var driverId = Guid.NewGuid();
+
+        vehicle.AssignDriver(driverId);
+        vehicle.ClearDomainEvents();
+
+        vehicle.AssignDriver(driverId);
+
+        Assert.Equal(driverId, vehicle.CurrentDriverId);
+        Assert.Empty(vehicle.DomainEvents);
+    }
+
+    [Fact]
     public void UnassignDriver_ShouldClearDriverAndRaiseDomainEvent()
     {
         var vehicle = CreateValidVehicle();
