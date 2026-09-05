@@ -35,6 +35,12 @@ public sealed class ScheduleMaintenanceUseCase
         var vehicle = await _vehicleRepository.GetByIdAsync(command.VehicleId, cancellationToken)
             ?? throw new NotFoundException("Vehicle", command.VehicleId);
 
+        var activeMaintenance = await _maintenanceRepository.GetActiveByVehicleIdAsync(command.VehicleId, cancellationToken);
+        if (activeMaintenance is not null)
+        {
+            throw new ConflictException($"Vehicle '{vehicle.Id}' already has an active maintenance record '{activeMaintenance.Id}' with status '{activeMaintenance.Status}'.");
+        }
+
         if (!Enum.TryParse<MaintenanceType>(command.Type, true, out var maintenanceType))
         {
             throw new ValidationException($"Invalid maintenance type: '{command.Type}'.");

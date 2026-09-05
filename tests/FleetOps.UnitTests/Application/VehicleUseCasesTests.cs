@@ -13,6 +13,7 @@ public sealed class VehicleUseCasesTests
 {
     private readonly InMemoryVehicleRepository _vehicleRepository = new();
     private readonly InMemoryDriverRepository _driverRepository = new();
+    private readonly InMemoryMaintenanceRepository _maintenanceRepository = new();
     private readonly InMemoryUnitOfWork _unitOfWork = new();
 
     private Vehicle CreateTestVehicle(VehicleStatus status = VehicleStatus.Active, Guid? driverId = null, int mileage = 1000)
@@ -139,6 +140,8 @@ public sealed class VehicleUseCasesTests
 
         Assert.Equal(VehicleStatus.Active.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -163,6 +166,8 @@ public sealed class VehicleUseCasesTests
         Assert.Equal(VehicleStatus.Inactive.ToString(), result.Status);
         Assert.Null(result.CurrentDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -186,6 +191,66 @@ public sealed class VehicleUseCasesTests
 
         Assert.Equal(driver.Id, result.CurrentDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
+    }
+
+    [Fact]
+    public async Task AssignDriverToVehicle_WhenDriverReassigned_ShouldUnassignPreviousAndAssignNewDriver()
+    {
+        var driverA = CreateTestDriver();
+        var driverB = Driver.Create(
+            Guid.NewGuid(),
+            "Jane Smith",
+            "DL-112233",
+            "jane.smith@fleetops.com",
+            "+5511977778888");
+
+        await _driverRepository.AddAsync(driverA);
+        await _driverRepository.AddAsync(driverB);
+
+        var vehicle = CreateTestVehicle(VehicleStatus.Active, driverA.Id);
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var useCase = new AssignDriverToVehicleUseCase(_vehicleRepository, _driverRepository, _unitOfWork);
+        var result = await useCase.ExecuteAsync(new AssignDriverToVehicleCommand(vehicle.Id, driverB.Id));
+
+        Assert.Equal(driverB.Id, result.CurrentDriverId);
+        Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
+    }
+
+    [Fact]
+    public async Task AssignDriverToVehicle_WhenSameDriverAssignedTwice_ShouldBeIdempotent()
+    {
+        var driver = CreateTestDriver();
+        await _driverRepository.AddAsync(driver);
+
+        var vehicle = CreateTestVehicle(VehicleStatus.Active, driver.Id);
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var useCase = new AssignDriverToVehicleUseCase(_vehicleRepository, _driverRepository, _unitOfWork);
+        var result = await useCase.ExecuteAsync(new AssignDriverToVehicleCommand(vehicle.Id, driver.Id));
+
+        Assert.Equal(driver.Id, result.CurrentDriverId);
+        Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+    }
+
+    [Fact]
+    public async Task AssignDriverToVehicle_WhenCancellationRequested_ShouldThrowOperationCanceledException()
+    {
+        var driver = CreateTestDriver();
+        var vehicle = CreateTestVehicle();
+        await _driverRepository.AddAsync(driver);
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var useCase = new AssignDriverToVehicleUseCase(_vehicleRepository, _driverRepository, _unitOfWork);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            useCase.ExecuteAsync(new AssignDriverToVehicleCommand(vehicle.Id, driver.Id), cts.Token));
     }
 
     [Fact]
@@ -241,6 +306,8 @@ public sealed class VehicleUseCasesTests
 
         Assert.Null(result.CurrentDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -266,6 +333,8 @@ public sealed class VehicleUseCasesTests
 
         Assert.Equal(1500, result.Mileage);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
@@ -295,19 +364,44 @@ public sealed class VehicleUseCasesTests
         Assert.Equal(VehicleStatus.UnderMaintenance.ToString(), result.Status);
         Assert.Null(result.CurrentDriverId);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
     }
 
     [Fact]
-    public async Task ReturnVehicleFromMaintenance_WhenUnderMaintenance_ShouldTransitionToActive()
+    public async Task ReturnVehicleFromMaintenance_WhenUnderMaintenanceAndNoActiveMaintenance_ShouldTransitionToActive()
     {
         var vehicle = CreateTestVehicle(VehicleStatus.UnderMaintenance);
         await _vehicleRepository.AddAsync(vehicle);
 
-        var useCase = new ReturnVehicleFromMaintenanceUseCase(_vehicleRepository, _unitOfWork);
+        var useCase = new ReturnVehicleFromMaintenanceUseCase(_vehicleRepository, _maintenanceRepository, _unitOfWork);
         var result = await useCase.ExecuteAsync(new ReturnVehicleFromMaintenanceCommand(vehicle.Id));
 
         Assert.Equal(VehicleStatus.Active.ToString(), result.Status);
         Assert.Equal(1, _unitOfWork.SaveChangesCallCount);
+        Assert.Equal(1, _vehicleRepository.UpdateCallCount);
+        Assert.True(_vehicleRepository.WasUpdated(vehicle.Id));
+    }
+
+    [Fact]
+    public async Task ReturnVehicleFromMaintenance_WhenActiveMaintenanceExists_ShouldThrowConflictException()
+    {
+        var vehicle = CreateTestVehicle(VehicleStatus.UnderMaintenance);
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var maintenance = Maintenance.Create(
+            Guid.NewGuid(),
+            vehicle.Id,
+            MaintenanceType.Corrective,
+            "Engine repair",
+            DateTimeOffset.UtcNow);
+        maintenance.Start(DateTimeOffset.UtcNow);
+        await _maintenanceRepository.AddAsync(maintenance);
+
+        var useCase = new ReturnVehicleFromMaintenanceUseCase(_vehicleRepository, _maintenanceRepository, _unitOfWork);
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            useCase.ExecuteAsync(new ReturnVehicleFromMaintenanceCommand(vehicle.Id)));
     }
 
     [Fact]
@@ -316,7 +410,7 @@ public sealed class VehicleUseCasesTests
         var vehicle = CreateTestVehicle(VehicleStatus.Active);
         await _vehicleRepository.AddAsync(vehicle);
 
-        var useCase = new ReturnVehicleFromMaintenanceUseCase(_vehicleRepository, _unitOfWork);
+        var useCase = new ReturnVehicleFromMaintenanceUseCase(_vehicleRepository, _maintenanceRepository, _unitOfWork);
 
         await Assert.ThrowsAsync<InvalidVehicleStateException>(() =>
             useCase.ExecuteAsync(new ReturnVehicleFromMaintenanceCommand(vehicle.Id)));

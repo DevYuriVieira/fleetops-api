@@ -124,6 +124,47 @@ public sealed class MaintenanceUseCasesTests
     }
 
     [Fact]
+    public async Task ScheduleMaintenance_WhenVehicleAlreadyHasActiveMaintenance_ShouldThrowConflictException()
+    {
+        var vehicle = CreateTestVehicle();
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var existing = CreateTestMaintenance(vehicle.Id, MaintenanceStatus.Scheduled);
+        await _maintenanceRepository.AddAsync(existing);
+
+        var useCase = new ScheduleMaintenanceUseCase(_maintenanceRepository, _vehicleRepository, _unitOfWork);
+        var command = new ScheduleMaintenanceCommand(
+            vehicle.Id,
+            "Preventive",
+            "Second maintenance",
+            DateTimeOffset.UtcNow.AddDays(5));
+
+        await Assert.ThrowsAsync<ConflictException>(() => useCase.ExecuteAsync(command));
+    }
+
+    [Fact]
+    public async Task ScheduleMaintenance_WhenVehicleHasOnlyCompletedMaintenance_ShouldAllowNewMaintenance()
+    {
+        var vehicle = CreateTestVehicle();
+        await _vehicleRepository.AddAsync(vehicle);
+
+        var completed = CreateTestMaintenance(vehicle.Id, MaintenanceStatus.Completed);
+        await _maintenanceRepository.AddAsync(completed);
+
+        var useCase = new ScheduleMaintenanceUseCase(_maintenanceRepository, _vehicleRepository, _unitOfWork);
+        var command = new ScheduleMaintenanceCommand(
+            vehicle.Id,
+            "Preventive",
+            "Next scheduled maintenance",
+            DateTimeOffset.UtcNow.AddDays(10));
+
+        var result = await useCase.ExecuteAsync(command);
+
+        Assert.NotNull(result);
+        Assert.Equal(MaintenanceStatus.Scheduled.ToString(), result.Status);
+    }
+
+    [Fact]
     public async Task StartMaintenance_WhenScheduled_ShouldTransitionToInProgressAndSendVehicleToMaintenance()
     {
         var vehicle = CreateTestVehicle(VehicleStatus.Active);
