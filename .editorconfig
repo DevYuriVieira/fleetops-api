@@ -46,3 +46,6 @@ dotnet_sort_system_directives_first = true
 dotnet_separate_import_directive_groups = false
 dotnet_code_quality.CA1001.severity = warning
 dotnet_code_quality.CA1822.severity = suggestion
+
+[**/Migrations/**.cs]
+dotnet_diagnostic.IDE0161.severity = none
