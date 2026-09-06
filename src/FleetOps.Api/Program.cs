@@ -16,12 +16,16 @@ builder.Services.AddControllers()
 
 builder.Services.AddExceptionHandler<FleetOps.Api.Middleware.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
+builder.Services.AddApiHealthChecks();
+builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+app.MapOpenApi();
+app.MapApiHealthChecks();
 app.MapControllers();
 
 app.Run();
