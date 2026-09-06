@@ -43,6 +43,7 @@ public static class ApplicationServiceExtensions
         services.AddScoped<StartMaintenanceUseCase>();
         services.AddScoped<CompleteMaintenanceUseCase>();
         services.AddScoped<CancelMaintenanceUseCase>();
+        services.AddScoped<ProcessMaintenanceCompletedUseCase>();
 
         return services;
     }

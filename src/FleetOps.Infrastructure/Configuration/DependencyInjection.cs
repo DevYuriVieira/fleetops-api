@@ -2,6 +2,7 @@ namespace FleetOps.Infrastructure.Configuration;
 
 using FleetOps.Application.Abstractions.Persistence;
 using FleetOps.Infrastructure.Messaging;
+using FleetOps.Infrastructure.Messaging.Consumers;
 using FleetOps.Infrastructure.Persistence;
 using FleetOps.Infrastructure.Persistence.Repositories;
 using FleetOps.Infrastructure.Services;
@@ -47,6 +48,7 @@ public static class DependencyInjection
 
         services.AddScoped<IOutboxService, OutboxService>();
         services.AddHostedService<OutboxProcessor>();
+        services.AddHostedService<MaintenanceCompletedConsumer>();
 
         return services;
     }
