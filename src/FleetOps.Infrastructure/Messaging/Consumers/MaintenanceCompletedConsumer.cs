@@ -57,7 +57,7 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
                     publisherConfirmationsEnabled: true,
                     publisherConfirmationTrackingEnabled: true);
 
-                var channel = await _connection.CreateChannelAsync(channelOptions, cancellationToken: stoppingToken);
+                await using var channel = await _connection.CreateChannelAsync(channelOptions, cancellationToken: stoppingToken);
                 await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false, cancellationToken: stoppingToken);
 
                 var consumer = new AsyncEventingBasicConsumer(channel);
