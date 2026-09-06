@@ -84,6 +84,8 @@ public sealed class RabbitMqConnection : IRabbitMqConnection
             return;
         }
 
+        var connection = await GetConnectionAsync(cancellationToken);
+
         await _connectionLock.WaitAsync(cancellationToken);
         try
         {
@@ -94,7 +96,7 @@ public sealed class RabbitMqConnection : IRabbitMqConnection
 
             _logger.LogInformation("Declaring RabbitMQ exchange and queue topology...");
 
-            await using var channel = await CreateChannelAsync(cancellationToken: cancellationToken);
+            await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
 
             await channel.ExchangeDeclareAsync(
                 exchange: _options.DeadLetterExchangeName,
@@ -147,6 +149,32 @@ public sealed class RabbitMqConnection : IRabbitMqConnection
                 routingKey: "maintenance.completed",
                 arguments: null,
                 cancellationToken: cancellationToken);
+
+            await channel.QueueBindAsync(
+                queue: _options.MaintenanceQueueName,
+                exchange: _options.DeadLetterExchangeName,
+                routingKey: "maintenance.completed.retry",
+                arguments: null,
+                cancellationToken: cancellationToken);
+
+            for (var i = 0; i < _options.RetryDelaysMilliseconds.Length; i++)
+            {
+                var retryQueueName = _options.GetRetryQueueName(i);
+                var retryArgs = new Dictionary<string, object?>
+                {
+                    ["x-message-ttl"] = _options.RetryDelaysMilliseconds[i],
+                    ["x-dead-letter-exchange"] = _options.DeadLetterExchangeName,
+                    ["x-dead-letter-routing-key"] = "maintenance.completed.retry"
+                };
+
+                await channel.QueueDeclareAsync(
+                    queue: retryQueueName,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: retryArgs,
+                    cancellationToken: cancellationToken);
+            }
 
             _topologyInitialized = true;
             _logger.LogInformation("RabbitMQ topology initialized successfully.");

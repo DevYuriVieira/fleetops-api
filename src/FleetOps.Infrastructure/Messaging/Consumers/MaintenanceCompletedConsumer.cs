@@ -6,7 +6,6 @@ using FleetOps.Application.UseCases.Maintenance;
 using FleetOps.Domain.Events;
 using FleetOps.Infrastructure.Configuration;
 using FleetOps.Infrastructure.Persistence;
-using FleetOps.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -103,23 +102,29 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
             _options.MaintenanceQueueName,
             ea.RoutingKey);
 
-        MaintenanceCompletedDomainEvent? domainEvent;
+        MaintenanceCompletedDomainEvent? domainEvent = null;
+        var isPoison = false;
+        string? poisonReason = null;
+
         try
         {
             domainEvent = JsonSerializer.Deserialize<MaintenanceCompletedDomainEvent>(body, SerializerOptions);
-            if (domainEvent is null)
+            if (domainEvent is null || domainEvent.MaintenanceId == Guid.Empty || domainEvent.VehicleId == Guid.Empty)
             {
-                throw new JsonException("Deserialized domain event is null.");
+                isPoison = true;
+                poisonReason = "Payload is null or contains empty identifiers.";
             }
         }
-        catch (JsonException ex)
+        catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Poison message {MessageId}: invalid payload format. Rejecting to DLQ without requeue.",
-                messageId);
+            isPoison = true;
+            poisonReason = ex.Message;
+        }
 
-            await channel.BasicRejectAsync(ea.DeliveryTag, requeue: false, cancellationToken);
+        if (isPoison)
+        {
+            _logger.LogError("Permanent poison message {MessageId}: {Reason}. Routing to DLQ.", messageId, poisonReason);
+            await RouteToDlqAsync(channel, ea, messageId, $"PoisonMessage: {poisonReason}", cancellationToken);
             return;
         }
 
@@ -134,30 +139,30 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
             {
                 await using var tx = await dbContext.Database.BeginTransactionAsync(cancellationToken);
 
-                var alreadyProcessed = await dbContext.ProcessedMessages
-                    .AnyAsync(m => m.MessageId == messageId && m.Consumer == ConsumerName, cancellationToken);
+                var alreadyProcessed = await dbContext.MaintenanceCompletionRecords
+                    .AnyAsync(m => m.MessageId == messageId, cancellationToken);
 
                 if (alreadyProcessed)
                 {
                     _logger.LogInformation(
-                        "Message {MessageId} already processed by {Consumer}. Skipping duplicate execution.",
-                        messageId,
-                        ConsumerName);
+                        "Message {MessageId} already processed. Skipping duplicate execution.",
+                        messageId);
 
                     await tx.RollbackAsync(cancellationToken);
                     return;
                 }
 
-                var command = new ProcessMaintenanceCompletedCommand(domainEvent.MaintenanceId, domainEvent.VehicleId);
+                var command = new ProcessMaintenanceCompletedCommand(
+                    messageId,
+                    domainEvent!.MaintenanceId,
+                    domainEvent.VehicleId,
+                    domainEvent.CompletedAt);
+
                 await useCase.ExecuteAsync(command, cancellationToken);
-
-                dbContext.ProcessedMessages.Add(new ProcessedMessage(messageId, ConsumerName, DateTimeOffset.UtcNow));
-                await dbContext.SaveChangesAsync(cancellationToken);
-
                 await tx.CommitAsync(cancellationToken);
 
                 _logger.LogInformation(
-                    "Durable state committed for message {MessageId} (Maintenance: {MaintenanceId}, Vehicle: {VehicleId})",
+                    "Durable maintenance completion record committed for message {MessageId} (Maintenance: {MaintenanceId}, Vehicle: {VehicleId})",
                     messageId,
                     domainEvent.MaintenanceId,
                     domainEvent.VehicleId);
@@ -167,28 +172,105 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var retryCount = GetRetryCount(ea.BasicProperties);
-            _logger.LogWarning(
-                ex,
-                "Transient failure processing message {MessageId}. Attempt: {RetryCount}/{MaxRetries}",
-                messageId,
-                retryCount + 1,
-                _options.MaxRetryAttempts);
-
-            if (retryCount + 1 >= _options.MaxRetryAttempts)
-            {
-                _logger.LogError(
-                    "Exhausted maximum retry attempts ({MaxRetries}) for message {MessageId}. Routing to DLQ.",
-                    _options.MaxRetryAttempts,
-                    messageId);
-
-                await channel.BasicRejectAsync(ea.DeliveryTag, requeue: false, cancellationToken);
-            }
-            else
-            {
-                await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken);
-            }
+            await HandleTransientFailureAsync(channel, ea, messageId, ex, cancellationToken);
         }
+    }
+
+    private async Task HandleTransientFailureAsync(
+        IChannel channel,
+        BasicDeliverEventArgs ea,
+        Guid messageId,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        var currentRetryCount = GetRetryCount(ea.BasicProperties);
+        _logger.LogWarning(
+            exception,
+            "Transient failure processing message {MessageId}. Current retry count: {RetryCount}/{MaxRetries}",
+            messageId,
+            currentRetryCount,
+            _options.MaxRetryAttempts);
+
+        if (currentRetryCount >= _options.MaxRetryAttempts || currentRetryCount >= _options.RetryDelaysMilliseconds.Length)
+        {
+            _logger.LogError(
+                "Exhausted maximum retry attempts ({MaxRetries}) for message {MessageId}. Routing to DLQ.",
+                _options.MaxRetryAttempts,
+                messageId);
+
+            await RouteToDlqAsync(channel, ea, messageId, "MaxRetriesExhausted", cancellationToken);
+            return;
+        }
+
+        var nextRetryCount = currentRetryCount + 1;
+        var retryQueueName = _options.GetRetryQueueName(currentRetryCount);
+
+        var properties = new BasicProperties
+        {
+            MessageId = messageId.ToString(),
+            Type = ea.BasicProperties.Type,
+            ContentType = ea.BasicProperties.ContentType ?? "application/json",
+            DeliveryMode = DeliveryModes.Persistent,
+            Timestamp = ea.BasicProperties.Timestamp
+        };
+
+        var headers = new Dictionary<string, object?>(ea.BasicProperties.Headers ?? new Dictionary<string, object?>())
+        {
+            ["x-retry-count"] = nextRetryCount,
+            ["x-exception-message"] = exception.Message
+        };
+        properties.Headers = headers;
+
+        _logger.LogInformation(
+            "Routing message {MessageId} to retry queue {RetryQueue} (attempt {NextRetry}/{MaxRetries})",
+            messageId,
+            retryQueueName,
+            nextRetryCount,
+            _options.MaxRetryAttempts);
+
+        await channel.BasicPublishAsync(
+            exchange: string.Empty,
+            routingKey: retryQueueName,
+            mandatory: true,
+            basicProperties: properties,
+            body: ea.Body,
+            cancellationToken: cancellationToken);
+
+        await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
+    }
+
+    private async Task RouteToDlqAsync(
+        IChannel channel,
+        BasicDeliverEventArgs ea,
+        Guid messageId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var properties = new BasicProperties
+        {
+            MessageId = messageId.ToString(),
+            Type = ea.BasicProperties.Type,
+            ContentType = ea.BasicProperties.ContentType ?? "application/json",
+            DeliveryMode = DeliveryModes.Persistent,
+            Timestamp = ea.BasicProperties.Timestamp
+        };
+
+        var headers = new Dictionary<string, object?>(ea.BasicProperties.Headers ?? new Dictionary<string, object?>())
+        {
+            ["x-dlq-reason"] = reason,
+            ["x-retry-count"] = GetRetryCount(ea.BasicProperties)
+        };
+        properties.Headers = headers;
+
+        await channel.BasicPublishAsync(
+            exchange: _options.DeadLetterExchangeName,
+            routingKey: "maintenance.completed.dlq",
+            mandatory: true,
+            basicProperties: properties,
+            body: ea.Body,
+            cancellationToken: cancellationToken);
+
+        await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
     }
 
     private static Guid ResolveMessageId(IReadOnlyBasicProperties properties)
@@ -212,22 +294,20 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
                 return count;
             }
 
+            if (value is long longCount)
+            {
+                return (int)longCount;
+            }
+
+            if (value is byte[] bytes && int.TryParse(Encoding.UTF8.GetString(bytes), out var parsedBytes))
+            {
+                return parsedBytes;
+            }
+
             if (int.TryParse(value.ToString(), out var parsed))
             {
                 return parsed;
             }
-        }
-
-        if (properties.Headers is not null &&
-            properties.Headers.TryGetValue("x-death", out var xDeath) &&
-            xDeath is System.Collections.IEnumerable list)
-        {
-            var deaths = 0;
-            foreach (var _ in list)
-            {
-                deaths++;
-            }
-            return deaths;
         }
 
         return 0;
