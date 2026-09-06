@@ -3,19 +3,23 @@ namespace FleetOps.Infrastructure.Services;
 using FleetOps.Infrastructure.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 public sealed class OutboxProcessor : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly OutboxOptions _options;
+    private readonly ILogger<OutboxProcessor> _logger;
 
     public OutboxProcessor(
         IServiceScopeFactory scopeFactory,
-        IOptions<OutboxOptions> options)
+        IOptions<OutboxOptions> options,
+        ILogger<OutboxProcessor> logger)
     {
         _scopeFactory = scopeFactory;
         _options = options.Value;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,9 +42,9 @@ public sealed class OutboxProcessor : BackgroundService
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                // Transient infrastructure failures do not terminate the background loop
+                _logger.LogError(ex, "Outbox processor execution failed. Retrying in {IntervalSeconds} seconds...", _options.IntervalSeconds);
             }
 
             try
