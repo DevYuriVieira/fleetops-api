@@ -44,6 +44,7 @@ public static class DependencyInjection
         services.AddScoped<IMaintenanceRepository, MaintenanceRepository>();
         services.AddScoped<IDeliveryRepository, DeliveryRepository>();
         services.AddScoped<IRouteRepository, RouteRepository>();
+        services.AddScoped<IMaintenanceCompletionRecordRepository, MaintenanceCompletionRecordRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         services.AddScoped<IOutboxService, OutboxService>();

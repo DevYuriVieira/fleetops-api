@@ -19,6 +19,7 @@ public class FleetOpsDbContext : DbContext
     public DbSet<Route> Routes => Set<Route>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
+    public DbSet<MaintenanceCompletionRecord> MaintenanceCompletionRecords => Set<MaintenanceCompletionRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -1,36 +1,44 @@
 namespace FleetOps.Application.UseCases.Maintenance;
 
 using FleetOps.Application.Abstractions.Persistence;
-using FleetOps.Application.Exceptions;
-using FleetOps.Domain.Enums;
 
-public sealed record ProcessMaintenanceCompletedCommand(Guid MaintenanceId, Guid VehicleId);
+public sealed record ProcessMaintenanceCompletedCommand(
+    Guid MessageId,
+    Guid MaintenanceId,
+    Guid VehicleId,
+    DateTimeOffset CompletedOnUtc);
 
 public sealed class ProcessMaintenanceCompletedUseCase
 {
-    private readonly IVehicleRepository _vehicleRepository;
+    private readonly IMaintenanceCompletionRecordRepository _repository;
     private readonly IUnitOfWork _unitOfWork;
 
     public ProcessMaintenanceCompletedUseCase(
-        IVehicleRepository vehicleRepository,
+        IMaintenanceCompletionRecordRepository repository,
         IUnitOfWork unitOfWork)
     {
-        _vehicleRepository = vehicleRepository;
+        _repository = repository;
         _unitOfWork = unitOfWork;
     }
 
-    public async Task ExecuteAsync(ProcessMaintenanceCompletedCommand command, CancellationToken cancellationToken = default)
+    public async Task<bool> ExecuteAsync(ProcessMaintenanceCompletedCommand command, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
 
-        var vehicle = await _vehicleRepository.GetByIdAsync(command.VehicleId, cancellationToken)
-            ?? throw new NotFoundException("Vehicle", command.VehicleId);
-
-        if (vehicle.Status == VehicleStatus.UnderMaintenance)
+        if (await _repository.ExistsAsync(command.MessageId, cancellationToken))
         {
-            vehicle.ReturnFromMaintenance();
-            await _vehicleRepository.UpdateAsync(vehicle, cancellationToken);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return false;
         }
+
+        await _repository.AddAsync(
+            command.MessageId,
+            command.MaintenanceId,
+            command.VehicleId,
+            command.CompletedOnUtc,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        return true;
     }
 }
