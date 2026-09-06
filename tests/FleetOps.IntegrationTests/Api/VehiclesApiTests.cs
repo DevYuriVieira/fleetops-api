@@ -65,6 +65,59 @@ public sealed class VehiclesApiTests : BaseApiTest
     }
 
     [Fact]
+    public async Task RegisterVehicle_ConcurrentDuplicateRequests_ExactlyOneSucceedsAndOneConflicts()
+    {
+        var licensePlate = $"CONC{Guid.NewGuid():N}"[..7].ToUpperInvariant();
+        var request = new RegisterVehicleRequest(
+            LicensePlate: licensePlate,
+            Type: "Van",
+            Make: "Mercedes",
+            Model: "Sprinter",
+            Year: 2023,
+            Mileage: 5000,
+            CapacityKg: 1800m);
+
+        using var clientA = Factory.CreateClient();
+        using var clientB = Factory.CreateClient();
+
+        using var barrier = new Barrier(2);
+
+        var taskA = Task.Run(async () =>
+        {
+            barrier.SignalAndWait();
+            return await clientA.PostAsJsonAsync("/api/vehicles", request);
+        });
+
+        var taskB = Task.Run(async () =>
+        {
+            barrier.SignalAndWait();
+            return await clientB.PostAsJsonAsync("/api/vehicles", request);
+        });
+
+        var responses = await Task.WhenAll(taskA, taskB);
+
+        var statusCodes = responses.Select(r => r.StatusCode).ToList();
+        Assert.Contains(HttpStatusCode.Created, statusCodes);
+        Assert.Contains(HttpStatusCode.Conflict, statusCodes);
+
+        var conflictResponse = responses.Single(r => r.StatusCode == HttpStatusCode.Conflict);
+        var problem = await ReadProblemDetailsAsync(conflictResponse);
+        Assert.NotNull(problem);
+        Assert.Equal(409, problem.Status);
+        Assert.NotNull(problem.Detail);
+        Assert.DoesNotContain("Npgsql", problem.Detail);
+        Assert.DoesNotContain("Stack", problem.Detail);
+        Assert.DoesNotContain("Exception", problem.Detail);
+
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<FleetOps.Infrastructure.Persistence.FleetOpsDbContext>();
+        var count = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.CountAsync(
+            db.Vehicles,
+            v => v.LicensePlate == FleetOps.Domain.ValueObjects.LicensePlate.Create(licensePlate));
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
     public async Task RegisterVehicle_WithInvalidType_Returns400BadRequest()
     {
         var request = new RegisterVehicleRequest(
