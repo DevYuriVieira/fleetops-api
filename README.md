@@ -63,40 +63,104 @@ A local containerized environment is provided via Docker Compose (`compose.yaml`
 ### Topology
 
 ```text
-                 Docker Host
-                      │
-     ┌────────────────┴────────────────┐
-     │ :5000                     :5432 │
-     ▼                                 ▼
-┌──────────────┐                 ┌────────────┐
-│ fleetops-api │ ──[network]───> │  postgres  │
-│  ASP.NET 10  │                 │ PostgreSQL │
-└──────────────┘                 └────────────┘
+                                  Docker Host
                                        │
-                                   [volume]
-                                       ▼
-                             fleetops-postgres-data
+                ┌──────────────────────┼──────────────────────┐
+                │ :5000                │ :5432                │ :5672 / :15672
+                ▼                      ▼                      ▼
+         ┌──────────────┐       ┌────────────┐        ┌──────────────┐
+         │ fleetops-api │ ────> │  postgres  │        │   rabbitmq   │
+         │  ASP.NET 10  │       │ PostgreSQL │        │ RabbitMQ 3.x │
+         └──────────────┘       └────────────┘        └──────────────┘
+                │                      │                      │
+                │                 [pg-volume]            [rmq-volume]
+                │                      ▼                      ▼
+          [outbox poll]       postgres-data          rabbitmq-data
+                │                      ▲
+                ▼                      │
+         [publish event]               │ [idempotent audit]
+                │                      │
+                ▼                      │
+         ┌──────────────┐              │
+         │   rabbitmq   │ ─────────────┘
+         │ fleetops.    │   (Consumer: MaintenanceCompletionRecord)
+         │    events    │
+         └──────────────┘
 ```
 
 ### Services & Port Mappings
 
 | Service | Container Name | Image / Build | Container Port | Host Port | Purpose |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `fleetops-api` | `fleetops-api` | `./Dockerfile` (ASP.NET 10) | `8080` | `5000` | FleetOps REST API |
-| `postgres` | `fleetops-postgres` | `postgres:18-alpine` | `5432` | `5432` | PostgreSQL Development Database |
+| `fleetops-api` | `fleetops-api` | `./Dockerfile` (ASP.NET 10) | `8080` | `5000` | FleetOps REST API & Outbox/Consumer Services |
+| `postgres` | `fleetops-postgres` | `postgres:18-alpine` | `5432` | `5432` | PostgreSQL Database (ACID Persistence & Outbox) |
+| `rabbitmq` | `fleetops-rabbitmq` | `rabbitmq:3-management-alpine` | `5672`, `15672` | `5672`, `15672` | RabbitMQ Broker & Management Web UI |
 
-### Infrastructure Status
+### Messaging Architecture & Guaranteed Delivery
+
+FleetOps implements asynchronous messaging downstream of the Transactional Outbox pattern:
 
 ```text
-Current infrastructure:
-PostgreSQL
-
-Planned distributed infrastructure:
-RabbitMQ
-
-Redis:
-Not currently required; will only be introduced when a concrete caching use case exists.
+Maintenance.Complete()
+        ↓
+MaintenanceCompleted (Domain Event)
+        ↓
+PostgreSQL Transaction (Domain State + OutboxMessage)
+        ↓
+OutboxProcessor (BackgroundService)
+        ↓
+RabbitMQ Topic Exchange (fleetops.events with Publisher Confirms)
+        ↓
+Durable Queue (fleetops.vehicle-maintenance.completed)
+        ↓
+MaintenanceCompletedConsumer (BackgroundService)
+        ↓
+PostgreSQL Transaction (Check MessageId -> Create MaintenanceCompletionRecord)
+        ↓
+RabbitMQ ACK (Manual BasicAckAsync)
 ```
+
+#### Native TTL Retry Schedule & DLQ Topology
+
+Message retries leverage RabbitMQ native dead-lettering and per-queue TTL instead of infinite requeue loops:
+
+```text
+fleetops.events (Topic Exchange)
+              │ (routing key: maintenance.completed)
+              ↓
+fleetops.vehicle-maintenance.completed (Main Queue)
+              │
+              ↓
+          Consumer
+          /      \
+     success     transient failure
+       ↓            ↓
+      ACK      Publish to retry queue + ACK original
+                    │
+                    ├── Attempt 1 → fleetops.vehicle-maintenance.completed.retry.10s (TTL: 10s)
+                    ├── Attempt 2 → fleetops.vehicle-maintenance.completed.retry.30s (TTL: 30s)
+                    └── Attempt 3 → fleetops.vehicle-maintenance.completed.retry.90s (TTL: 90s)
+                                    │
+                              (TTL Expiry)
+                                    │
+                                    ↓
+                         fleetops.events.dlx (DLX Exchange)
+                                    │ (routing key: maintenance.completed.retry)
+                                    ↓
+                         fleetops.vehicle-maintenance.completed (Delivered for next attempt)
+
+After 3 failed attempts:
+          Exhausted retries ──> fleetops.events.dlx (routing key: maintenance.completed.dlq)
+                                        │
+                                        ↓
+                                fleetops.vehicle-maintenance.completed.dlq (DLQ)
+```
+
+* **Retry Tracking**: Explicit header `x-retry-count` (values 1, 2, 3).
+* **Failure Classification**:
+  * **Transient Failures** (e.g. database timeout, network partition): routed through the 10s → 30s → 90s TTL retry stages.
+  * **Permanent / Poison Messages** (e.g. malformed JSON, invalid payload): routed immediately to `fleetops.vehicle-maintenance.completed.dlq` without requeue.
+* **Idempotency**: `MaintenanceCompletionRecord` is keyed by `MessageId` (primary key). Duplicate deliveries are safely skipped and acknowledged without duplicate business side effects.
 
 ### Prerequisites
 
