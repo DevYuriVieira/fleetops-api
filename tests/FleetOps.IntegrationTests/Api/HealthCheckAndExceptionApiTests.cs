@@ -2,6 +2,8 @@ namespace FleetOps.IntegrationTests.Api;
 
 using System.Net;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 public sealed class HealthCheckAndExceptionApiTests : BaseApiTest
@@ -26,6 +28,43 @@ public sealed class HealthCheckAndExceptionApiTests : BaseApiTest
         Assert.Contains("Healthy", content);
         Assert.DoesNotContain("Password", content);
         Assert.DoesNotContain("5433", content);
+    }
+
+    [Fact]
+    public async Task ReadinessHealthCheck_WhenDatabaseIsUnavailable_Returns503ServiceUnavailable_WithSanitizedResponse()
+    {
+        using var isolatedFactory = Factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                var descriptor = services.SingleOrDefault(
+                    d => d.ServiceType == typeof(Microsoft.EntityFrameworkCore.DbContextOptions<FleetOps.Infrastructure.Persistence.FleetOpsDbContext>));
+
+                if (descriptor is not null)
+                {
+                    services.Remove(descriptor);
+                }
+
+                services.AddDbContext<FleetOps.Infrastructure.Persistence.FleetOpsDbContext>((_, options) =>
+                {
+                    options.UseNpgsql("Host=127.0.0.1;Port=5439;Database=unreachable_fleetops;Username=postgres;Password=secret_password_123;Timeout=1;CommandTimeout=1;");
+                });
+            });
+        });
+
+        using var client = isolatedFactory.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        var content = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Unhealthy", content);
+        Assert.DoesNotContain("secret_password_123", content);
+        Assert.DoesNotContain("5439", content);
+        Assert.DoesNotContain("unreachable_fleetops", content);
+        Assert.DoesNotContain("Exception", content);
+        Assert.DoesNotContain("Npgsql", content);
     }
 
     [Fact]
