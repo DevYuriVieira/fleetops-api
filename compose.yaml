@@ -1,0 +1,54 @@
+services:
+  fleetops-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fleetops-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-5000}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-fleetops};Username=${POSTGRES_USER:-fleetops_dev};Password=${POSTGRES_PASSWORD:-fleetops_dev_secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - fleetops-network
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: fleetops-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fleetops}
+      POSTGRES_USER: ${POSTGRES_USER:-fleetops_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fleetops_dev_secret}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fleetops_dev} -d ${POSTGRES_DB:-fleetops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fleetops-network
+
+volumes:
+  postgres-data:
+    name: fleetops-postgres-data
+
+networks:
+  fleetops-network:
+    name: fleetops-network
+    driver: bridge
