@@ -19,7 +19,7 @@ public static class DependencyInjection
         var connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? configuration.GetConnectionString("Database")
             ?? configuration["POSTGRES_CONNECTION_STRING"]
-            ?? "Host=localhost;Port=5432;Database=fleetops;Username=postgres;Password=postgres;";
+            ?? throw new InvalidOperationException("PostgreSQL connection string is not configured. Set 'ConnectionStrings:DefaultConnection' or 'POSTGRES_CONNECTION_STRING'.");
 
         services.AddDbContext<FleetOpsDbContext>((_, options) =>
         {

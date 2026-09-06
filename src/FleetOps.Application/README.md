@@ -14,7 +14,6 @@ Following Clean Architecture:
   - Entity Framework Core / DbContext / ORMs
   - ASP.NET Core / HTTP / MVC
   - PostgreSQL / Npgsql
-  - Redis / Caching
   - RabbitMQ / Messaging
   - MediatR (use cases are explicit, typed service classes)
 
