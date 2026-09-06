@@ -60,6 +60,30 @@ public sealed class HealthCheckAndExceptionApiTests : BaseApiTest
     }
 
     [Fact]
+    public async Task RegisterVehicle_WithEmptyJsonObject_Returns400BadRequest_WithProblemDetails()
+    {
+        var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        var response = await Client.PostAsync("/api/vehicles", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await ReadProblemDetailsAsync(response);
+        Assert.NotNull(problem);
+        Assert.Equal(400, problem.Status);
+    }
+
+    [Fact]
+    public async Task RegisterVehicle_WithCompletelyEmptyBody_Returns400BadRequest_WithProblemDetails()
+    {
+        var content = new StringContent("", Encoding.UTF8, "application/json");
+        var response = await Client.PostAsync("/api/vehicles", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await ReadProblemDetailsAsync(response);
+        Assert.NotNull(problem);
+        Assert.Equal(400, problem.Status);
+    }
+
+    [Fact]
     public async Task InvalidGuidInRoute_Returns404Or400_WithProblemDetails()
     {
         var response = await Client.PostAsync("/api/vehicles/not-a-guid/activate", null);
