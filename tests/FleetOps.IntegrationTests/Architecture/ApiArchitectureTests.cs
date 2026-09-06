@@ -23,7 +23,10 @@ public sealed class ApiArchitectureTests
             "FleetOps.Infrastructure",
             "Microsoft.AspNetCore",
             "Microsoft.EntityFrameworkCore",
-            "Npgsql"
+            "Npgsql",
+            "RabbitMQ",
+            "MassTransit",
+            "MediatR"
         };
 
         foreach (var f in forbidden)
@@ -44,7 +47,10 @@ public sealed class ApiArchitectureTests
             "FleetOps.Infrastructure",
             "Microsoft.AspNetCore",
             "Microsoft.EntityFrameworkCore",
-            "Npgsql"
+            "Npgsql",
+            "RabbitMQ",
+            "MassTransit",
+            "MediatR"
         };
 
         foreach (var f in forbidden)
@@ -61,6 +67,8 @@ public sealed class ApiArchitectureTests
 
         Assert.DoesNotContain(references, r => r != null && r.StartsWith("FleetOps.Api", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(references, r => r != null && r.StartsWith("Microsoft.AspNetCore.Mvc", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(references, r => r != null && r.StartsWith("MassTransit", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(references, r => r != null && r.StartsWith("MediatR", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

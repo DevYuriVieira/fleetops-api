@@ -8,7 +8,7 @@ namespace FleetOps.IntegrationTests.Common;
 
 public abstract class BaseIntegrationTest : IAsyncLifetime
 {
-    private static readonly string ConnectionString =
+    protected static readonly string ConnectionString =
         Environment.GetEnvironmentVariable("FLEETOPS_TEST_CONNECTION_STRING")
         ?? "Host=127.0.0.1;Port=5433;Database=fleetops_test;Username=postgres;Password=;";
 
@@ -47,6 +47,6 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
     {
         await using var context = CreateDbContext();
         await context.Database.ExecuteSqlRawAsync(
-            "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages CASCADE;");
+            "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages, processed_messages, maintenance_completion_records CASCADE;");
     }
 }

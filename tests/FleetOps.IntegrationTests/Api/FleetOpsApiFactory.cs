@@ -52,7 +52,7 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
         using var scope = Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<FleetOpsDbContext>();
         await dbContext.Database.ExecuteSqlRawAsync(
-            "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages CASCADE;");
+            "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages, processed_messages, maintenance_completion_records CASCADE;");
     }
 
     Task IAsyncLifetime.DisposeAsync()
