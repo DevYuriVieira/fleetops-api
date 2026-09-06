@@ -20,14 +20,28 @@ public sealed class DeliveryRepository : IDeliveryRepository
 
     public async Task<Delivery?> GetByTrackingCodeAsync(string trackingCode, CancellationToken cancellationToken = default)
     {
-        var normalized = trackingCode.Trim().ToUpperInvariant();
-        return await _context.Deliveries.FirstOrDefaultAsync(d => d.TrackingCode.Value == normalized, cancellationToken);
+        try
+        {
+            var code = FleetOps.Domain.ValueObjects.TrackingCode.Create(trackingCode);
+            return await _context.Deliveries.FirstOrDefaultAsync(d => d.TrackingCode == code, cancellationToken);
+        }
+        catch (FleetOps.Domain.Exceptions.DomainValidationException)
+        {
+            return null;
+        }
     }
 
     public async Task<bool> ExistsByTrackingCodeAsync(string trackingCode, CancellationToken cancellationToken = default)
     {
-        var normalized = trackingCode.Trim().ToUpperInvariant();
-        return await _context.Deliveries.AnyAsync(d => d.TrackingCode.Value == normalized, cancellationToken);
+        try
+        {
+            var code = FleetOps.Domain.ValueObjects.TrackingCode.Create(trackingCode);
+            return await _context.Deliveries.AnyAsync(d => d.TrackingCode == code, cancellationToken);
+        }
+        catch (FleetOps.Domain.Exceptions.DomainValidationException)
+        {
+            return false;
+        }
     }
 
     public async Task AddAsync(Delivery delivery, CancellationToken cancellationToken = default)

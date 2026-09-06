@@ -20,14 +20,28 @@ public sealed class VehicleRepository : IVehicleRepository
 
     public async Task<Vehicle?> GetByLicensePlateAsync(string licensePlate, CancellationToken cancellationToken = default)
     {
-        var normalized = licensePlate.Trim().ToUpperInvariant().Replace("-", "").Replace(" ", "");
-        return await _context.Vehicles.FirstOrDefaultAsync(v => v.LicensePlate.Value == normalized, cancellationToken);
+        try
+        {
+            var plate = FleetOps.Domain.ValueObjects.LicensePlate.Create(licensePlate);
+            return await _context.Vehicles.FirstOrDefaultAsync(v => v.LicensePlate == plate, cancellationToken);
+        }
+        catch (FleetOps.Domain.Exceptions.DomainValidationException)
+        {
+            return null;
+        }
     }
 
     public async Task<bool> ExistsByLicensePlateAsync(string licensePlate, CancellationToken cancellationToken = default)
     {
-        var normalized = licensePlate.Trim().ToUpperInvariant().Replace("-", "").Replace(" ", "");
-        return await _context.Vehicles.AnyAsync(v => v.LicensePlate.Value == normalized, cancellationToken);
+        try
+        {
+            var plate = FleetOps.Domain.ValueObjects.LicensePlate.Create(licensePlate);
+            return await _context.Vehicles.AnyAsync(v => v.LicensePlate == plate, cancellationToken);
+        }
+        catch (FleetOps.Domain.Exceptions.DomainValidationException)
+        {
+            return false;
+        }
     }
 
     public async Task AddAsync(Vehicle vehicle, CancellationToken cancellationToken = default)
