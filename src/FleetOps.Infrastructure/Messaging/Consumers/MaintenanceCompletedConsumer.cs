@@ -53,7 +53,11 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
             {
                 await _connection.InitializeTopologyAsync(stoppingToken);
 
-                var channel = await _connection.CreateChannelAsync(cancellationToken: stoppingToken);
+                var channelOptions = new CreateChannelOptions(
+                    publisherConfirmationsEnabled: true,
+                    publisherConfirmationTrackingEnabled: true);
+
+                var channel = await _connection.CreateChannelAsync(channelOptions, cancellationToken: stoppingToken);
                 await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 10, global: false, cancellationToken: stoppingToken);
 
                 var consumer = new AsyncEventingBasicConsumer(channel);
@@ -236,6 +240,11 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
             body: ea.Body,
             cancellationToken: cancellationToken);
 
+        _logger.LogInformation(
+            "Broker confirmed publication of retry message {MessageId} to queue {RetryQueue}",
+            messageId,
+            retryQueueName);
+
         await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
     }
 
@@ -269,6 +278,10 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
             basicProperties: properties,
             body: ea.Body,
             cancellationToken: cancellationToken);
+
+        _logger.LogInformation(
+            "Broker confirmed publication of message {MessageId} to DLQ",
+            messageId);
 
         await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
     }
