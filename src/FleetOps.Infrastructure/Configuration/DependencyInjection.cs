@@ -1,6 +1,7 @@
 namespace FleetOps.Infrastructure.Configuration;
 
 using FleetOps.Application.Abstractions.Persistence;
+using FleetOps.Infrastructure.Messaging;
 using FleetOps.Infrastructure.Persistence;
 using FleetOps.Infrastructure.Persistence.Repositories;
 using FleetOps.Infrastructure.Services;
@@ -32,6 +33,10 @@ public static class DependencyInjection
         });
 
         services.Configure<OutboxOptions>(configuration.GetSection(OutboxOptions.SectionName));
+        services.Configure<RabbitMqOptions>(configuration.GetSection(RabbitMqOptions.SectionName));
+
+        services.AddSingleton<IRabbitMqConnection, RabbitMqConnection>();
+        services.AddSingleton<IRabbitMqPublisher, RabbitMqPublisher>();
 
         services.AddScoped<IVehicleRepository, VehicleRepository>();
         services.AddScoped<IDriverRepository, DriverRepository>();
