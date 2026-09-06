@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using FleetOps.Api.Contracts.Drivers;
 using FleetOps.Api.Contracts.Vehicles;
 using FleetOps.Application.DTOs;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 public sealed class VehiclesApiTests : BaseApiTest
@@ -182,6 +183,114 @@ public sealed class VehiclesApiTests : BaseApiTest
         var returnedDto = await returnResponse.Content.ReadFromJsonAsync<VehicleDto>();
         Assert.NotNull(returnedDto);
         Assert.Equal("Active", returnedDto.Status);
+    }
+
+    [Fact]
+    public async Task VehicleLifecycle_FullEndToEnd_Succeeds()
+    {
+        var regVehicleRequest = new RegisterVehicleRequest(
+            LicensePlate: "E2E8888",
+            Type: "Truck",
+            Make: "Scania",
+            Model: "R450",
+            Year: 2024,
+            Mileage: 50000,
+            CapacityKg: 25000m);
+
+        var regResponse = await Client.PostAsJsonAsync("/api/vehicles", regVehicleRequest);
+        Assert.Equal(HttpStatusCode.Created, regResponse.StatusCode);
+        var vehicle = await regResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(vehicle);
+        Assert.Equal("Active", vehicle.Status);
+        Assert.Equal(50000, vehicle.Mileage);
+
+        var deactResponse = await Client.PostAsync($"/api/vehicles/{vehicle.Id}/deactivate", null);
+        Assert.Equal(HttpStatusCode.OK, deactResponse.StatusCode);
+        var deactDto = await deactResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(deactDto);
+        Assert.Equal("Inactive", deactDto.Status);
+
+        var actResponse = await Client.PostAsync($"/api/vehicles/{vehicle.Id}/activate", null);
+        Assert.Equal(HttpStatusCode.OK, actResponse.StatusCode);
+        var actDto = await actResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(actDto);
+        Assert.Equal("Active", actDto.Status);
+
+        var regDriverRequest = new RegisterDriverRequest("Carlos Silva", "DL-E2E-01", "carlos@fleetops.com", "+5511988887777");
+        var driverResponse = await Client.PostAsJsonAsync("/api/drivers", regDriverRequest);
+        Assert.Equal(HttpStatusCode.Created, driverResponse.StatusCode);
+        var driver = await driverResponse.Content.ReadFromJsonAsync<DriverDto>();
+        Assert.NotNull(driver);
+        Assert.Equal("Active", driver.Status);
+
+        var assignResponse = await Client.PostAsJsonAsync($"/api/vehicles/{vehicle.Id}/assign-driver", new AssignDriverRequest(driver.Id));
+        Assert.Equal(HttpStatusCode.OK, assignResponse.StatusCode);
+        var assignedDto = await assignResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(assignedDto);
+        Assert.Equal(driver.Id, assignedDto.CurrentDriverId);
+
+        var mileageResponse = await Client.PostAsJsonAsync($"/api/vehicles/{vehicle.Id}/mileage", new UpdateVehicleMileageRequest(52500));
+        Assert.Equal(HttpStatusCode.OK, mileageResponse.StatusCode);
+        var mileageDto = await mileageResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(mileageDto);
+        Assert.Equal(52500, mileageDto.Mileage);
+
+        var schedRequest = new FleetOps.Api.Contracts.Maintenance.ScheduleMaintenanceRequest(
+            vehicle.Id, "Preventive", "Full engine inspection", DateTimeOffset.UtcNow.AddDays(2));
+        var schedResponse = await Client.PostAsJsonAsync("/api/maintenances", schedRequest);
+        Assert.Equal(HttpStatusCode.Created, schedResponse.StatusCode);
+        var maintenance = await schedResponse.Content.ReadFromJsonAsync<MaintenanceDto>();
+        Assert.NotNull(maintenance);
+        Assert.Equal("Scheduled", maintenance.Status);
+
+        var startMntResponse = await Client.PostAsJsonAsync($"/api/maintenances/{maintenance.Id}/start",
+            new FleetOps.Api.Contracts.Maintenance.StartMaintenanceRequest(DateTimeOffset.UtcNow));
+        Assert.Equal(HttpStatusCode.OK, startMntResponse.StatusCode);
+        var startedMntDto = await startMntResponse.Content.ReadFromJsonAsync<MaintenanceDto>();
+        Assert.NotNull(startedMntDto);
+        Assert.Equal("InProgress", startedMntDto.Status);
+
+        var compMntResponse = await Client.PostAsJsonAsync($"/api/maintenances/{maintenance.Id}/complete",
+            new FleetOps.Api.Contracts.Maintenance.CompleteMaintenanceRequest(1250m, "USD", DateTimeOffset.UtcNow, ReturnVehicleToActive: false));
+        Assert.Equal(HttpStatusCode.OK, compMntResponse.StatusCode);
+        var completedMntDto = await compMntResponse.Content.ReadFromJsonAsync<MaintenanceDto>();
+        Assert.NotNull(completedMntDto);
+        Assert.Equal("Completed", completedMntDto.Status);
+        Assert.Equal(1250m, completedMntDto.CostAmount);
+
+        var returnResponse = await Client.PostAsync($"/api/vehicles/{vehicle.Id}/return-from-maintenance", null);
+        Assert.Equal(HttpStatusCode.OK, returnResponse.StatusCode);
+        var returnedDto = await returnResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(returnedDto);
+        Assert.Equal("Active", returnedDto.Status);
+
+        var reassignResponse = await Client.PostAsJsonAsync($"/api/vehicles/{vehicle.Id}/assign-driver", new AssignDriverRequest(driver.Id));
+        Assert.Equal(HttpStatusCode.OK, reassignResponse.StatusCode);
+
+        var unassignResponse = await Client.PostAsync($"/api/vehicles/{vehicle.Id}/unassign-driver", null);
+        Assert.Equal(HttpStatusCode.OK, unassignResponse.StatusCode);
+        var unassignedDto = await unassignResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(unassignedDto);
+        Assert.Null(unassignedDto.CurrentDriverId);
+
+        var finalDeactResponse = await Client.PostAsync($"/api/vehicles/{vehicle.Id}/deactivate", null);
+        Assert.Equal(HttpStatusCode.OK, finalDeactResponse.StatusCode);
+        var finalDto = await finalDeactResponse.Content.ReadFromJsonAsync<VehicleDto>();
+        Assert.NotNull(finalDto);
+        Assert.Equal("Inactive", finalDto.Status);
+
+        using var scope = Factory.Services.CreateScope();
+        var db = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<FleetOps.Infrastructure.Persistence.FleetOpsDbContext>(scope.ServiceProvider);
+        var persistedVehicle = await db.Vehicles.FindAsync(vehicle.Id);
+        Assert.NotNull(persistedVehicle);
+        Assert.Equal(FleetOps.Domain.Enums.VehicleStatus.Inactive, persistedVehicle.Status);
+        Assert.Equal(52500, persistedVehicle.Mileage);
+        Assert.Null(persistedVehicle.CurrentDriverId);
+
+        var persistedMnt = await db.Maintenances.FindAsync(maintenance.Id);
+        Assert.NotNull(persistedMnt);
+        Assert.Equal(FleetOps.Domain.Enums.MaintenanceStatus.Completed, persistedMnt.Status);
+        Assert.Equal(1250m, persistedMnt.Cost?.Amount);
     }
 
     [Fact]
