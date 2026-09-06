@@ -290,7 +290,12 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
             var count = await context.MaintenanceCompletionRecords.CountAsync(r => r.MessageId == messageId);
             if (count == 1)
             {
-                break;
+                await using var checkChannel = await _connection.CreateChannelAsync();
+                var queueInfo = await checkChannel.QueueDeclarePassiveAsync(_options.MaintenanceQueueName);
+                if (queueInfo.MessageCount == 0)
+                {
+                    break;
+                }
             }
         }
 
@@ -593,6 +598,64 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
     }
 
     [Fact]
+    public async Task Consumer_UsesPublisherConfirmations_ForRetryAndDlqPublishing()
+    {
+        var trackingConnection = new ChannelTrackingRabbitMqConnection(_connection);
+        var failingRepo = new TransientFailingRepository();
+        var services = BuildServiceProvider(failingRepo);
+        var consumer = new MaintenanceCompletedConsumer(
+            trackingConnection,
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(_options),
+            NullLogger<MaintenanceCompletedConsumer>.Instance);
+
+        var messageId = Guid.NewGuid();
+        var domainEvent = new MaintenanceCompletedDomainEvent(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            new Money(500m, "USD"),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        var payload = JsonSerializer.Serialize(domainEvent, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+
+        await _publisher.PublishAsync(messageId, "MaintenanceCompleted", "maintenance.completed", payload);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await consumer.StartAsync(cts.Token);
+
+        var retryQueueName = _options.GetRetryQueueName(0);
+        BasicGetResult? retryResult = null;
+        for (var i = 0; i < 50; i++)
+        {
+            await Task.Delay(100);
+            await using var checkChannel = await _connection.CreateChannelAsync();
+            retryResult = await checkChannel.BasicGetAsync(retryQueueName, autoAck: true);
+            if (retryResult is not null)
+            {
+                break;
+            }
+        }
+
+        await consumer.StopAsync(CancellationToken.None);
+
+        var options = Assert.Single(trackingConnection.CapturedOptions);
+        Assert.NotNull(options);
+        Assert.True(options.PublisherConfirmationsEnabled);
+        Assert.True(options.PublisherConfirmationTrackingEnabled);
+
+        Assert.NotNull(retryResult);
+        Assert.Equal(messageId.ToString(), retryResult.BasicProperties.MessageId);
+
+        await using var channel = await _connection.CreateChannelAsync();
+        var remaining = await channel.BasicGetAsync(_options.MaintenanceQueueName, autoAck: true);
+        Assert.Null(remaining);
+    }
+
+    [Fact]
     public async Task Consumer_WhenCancelledOrShutdown_TerminatesCleanly()
     {
         var services = BuildServiceProvider();
@@ -610,6 +673,61 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
 
         await consumer.StopAsync(CancellationToken.None);
         Assert.True(task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Consumer_WhenCancelledOrShutdown_DisposesChannelCleanly()
+    {
+        var trackingConnection = new ChannelTrackingRabbitMqConnection(_connection);
+        var services = BuildServiceProvider();
+        var consumer = new MaintenanceCompletedConsumer(
+            trackingConnection,
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(_options),
+            NullLogger<MaintenanceCompletedConsumer>.Instance);
+
+        using var cts = new CancellationTokenSource();
+        var task = consumer.StartAsync(cts.Token);
+
+        await Task.Delay(200);
+        cts.Cancel();
+
+        await consumer.StopAsync(CancellationToken.None);
+        Assert.True(task.IsCompleted);
+
+        var channel = Assert.Single(trackingConnection.CreatedChannels);
+        Assert.True(channel.IsClosed);
+        Assert.False(channel.IsOpen);
+    }
+
+    private sealed class ChannelTrackingRabbitMqConnection : IRabbitMqConnection
+    {
+        private readonly IRabbitMqConnection _inner;
+        public List<CreateChannelOptions?> CapturedOptions { get; } = new();
+        public List<IChannel> CreatedChannels { get; } = new();
+
+        public ChannelTrackingRabbitMqConnection(IRabbitMqConnection inner)
+        {
+            _inner = inner;
+        }
+
+        public bool IsConnected => _inner.IsConnected;
+
+        public Task<IConnection> GetConnectionAsync(CancellationToken cancellationToken = default) =>
+            _inner.GetConnectionAsync(cancellationToken);
+
+        public async Task<IChannel> CreateChannelAsync(CreateChannelOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            CapturedOptions.Add(options);
+            var channel = await _inner.CreateChannelAsync(options, cancellationToken);
+            CreatedChannels.Add(channel);
+            return channel;
+        }
+
+        public Task InitializeTopologyAsync(CancellationToken cancellationToken = default) =>
+            _inner.InitializeTopologyAsync(cancellationToken);
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
     }
 
     private IServiceProvider BuildServiceProvider(IMaintenanceCompletionRecordRepository? repoOverride = null)

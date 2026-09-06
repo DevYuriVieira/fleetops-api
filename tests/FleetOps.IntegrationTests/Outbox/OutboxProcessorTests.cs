@@ -8,6 +8,8 @@ using FleetOps.Infrastructure.Persistence.Repositories;
 using FleetOps.Infrastructure.Services;
 using FleetOps.IntegrationTests.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -204,6 +206,57 @@ public class OutboxProcessorTests : BaseIntegrationTest
             Assert.NotNull(msg);
             Assert.Null(msg.ProcessedOnUtc);
             Assert.Equal(2, msg.Attempts);
+        }
+    }
+
+    [Fact]
+    public async Task OutboxProcessor_WhenOutboxServiceThrows_LogsErrorAndDoesNotCrash()
+    {
+        var services = new ServiceCollection();
+        var failingOutbox = new FailingOutboxService();
+        services.AddScoped<IOutboxService>(_ => failingOutbox);
+        var provider = services.BuildServiceProvider();
+
+        var testLogger = new TestLogger<OutboxProcessor>();
+        var options = Options.Create(new OutboxOptions { IntervalSeconds = 1, Enabled = true });
+
+        var processor = new OutboxProcessor(provider.GetRequiredService<IServiceScopeFactory>(), options, testLogger);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        await processor.StartAsync(cts.Token);
+        await Task.Delay(200);
+        await processor.StopAsync(CancellationToken.None);
+
+        Assert.Contains(testLogger.LoggedMessages, m =>
+            m.LogLevel == LogLevel.Error &&
+            m.Exception is InvalidOperationException &&
+            m.Message.Contains("Outbox processor execution failed"));
+    }
+
+    private sealed class FailingOutboxService : IOutboxService
+    {
+        public Task<int> ProcessPendingMessagesAsync(CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("Simulated database failure during outbox processing");
+        }
+    }
+
+    private sealed class TestLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel LogLevel, string Message, Exception? Exception)> LoggedMessages { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            LoggedMessages.Add((logLevel, formatter(state, exception), exception));
         }
     }
 }
