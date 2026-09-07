@@ -10,7 +10,7 @@
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
-[![Automated Tests](https://img.shields.io/badge/Tests-268%20Passing-brightgreen?logo=xunit&logoColor=white)](#21-testing)
+[![Automated Tests](https://img.shields.io/badge/Tests-276%20Passing-brightgreen?logo=xunit&logoColor=white)](#21-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#28-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -35,16 +35,16 @@
 | **Mapeamento Objeto-Relacional** | Entity Framework Core 10.0.11 + Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 |
 | **Mensageria Assíncrona** | RabbitMQ 3.x com RabbitMQ.Client 7.2.2 (Async API) |
 | **Confiabilidade de Eventos** | Transactional Outbox Pattern integrado ao `DbContext.SaveChangesAsync` |
-| **Concorrência no Outbox** | `FOR UPDATE SKIP LOCKED` (Multi-réplica em pods paralelos sem lock contention ou duplicações) |
+| **Concorrência no Outbox** | `FOR UPDATE SKIP LOCKED` (Trabalhadores paralelos selecionam lotes distintos sem aguardar linhas bloqueadas) |
 | **Rastreamento Distribuído** | OpenTelemetry .NET + Jaeger (Propagação W3C `traceparent` de ponta a ponta: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) |
 | **Autenticação & Autorização** | JWT Bearer Tokens (HMAC-SHA256) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Semântica de Entrega** | At-least-once delivery (sem promessas irreais de exactly-once distribuído) |
 | **Idempotência de Consumo** | Desduplicação baseada em chave primária `MessageId` |
 | **Controle de Resiliência** | Dead-Letter Exchange (DLX), Filas TTL de Retry (10s, 30s, 90s) e Dead-Letter Queue (DLQ) |
-| **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e no Consumer Retry/DLQ |
+| **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e Consumer (confirmação formal do broker) |
 | **Controle de Concorrência** | PostgreSQL Unique Constraints + Concorrência Otimista com `xmin` (`xid` system column) |
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
-| **Testes Automatizados** | 268 testes automatizados (166 testes de unidade + 102 testes de integração) |
+| **Testes Automatizados** | 276 testes automatizados (166 testes de unidade + 110 testes de integração) |
 | **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -749,7 +749,7 @@ A API protege seus recursos através de autenticação **JWT Bearer** (RFC 7519)
 | `Admin` | Gestão irrestrita de infraestrutura e negócios | Acesso total a todos os recursos da API |
 | `FleetManager` | Gestão operacional de frota e ativos | `/api/vehicles/*`, `/api/drivers/*`, `/api/maintenances/*`, `/api/deliveries/*`, `/api/routes/*` |
 | `Dispatcher` | Gestão logística de tráfego e despachos | `/api/deliveries/*`, `/api/routes/*` |
-| `Driver` | Acesso operacional de condutor | Consulta de rotas e tarefas designadas (permissões de leitura) |
+| `Driver` | Acesso operacional de condutor | Reservado no modelo RBAC para futuras consultas operacionais de condutores |
 
 ### Fluxo de Autenticação e Emissão de Token
 
@@ -1118,16 +1118,16 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **ORM & Driver** | Entity Framework Core 10.0.11 + Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 |
 | **Asynchronous Messaging** | RabbitMQ 3.x with RabbitMQ.Client 7.2.2 (Async API) |
 | **Event Reliability** | Transactional Outbox Pattern integrated into `DbContext.SaveChangesAsync` |
-| **Outbox Concurrency** | `FOR UPDATE SKIP LOCKED` (Multi-replica polling across parallel pods with zero lock contention or duplicate dispatches) |
+| **Outbox Concurrency** | `FOR UPDATE SKIP LOCKED` (Parallel workers select disjoint batches without waiting on locked rows) |
 | **Distributed Tracing** | OpenTelemetry .NET + Jaeger (End-to-end W3C `traceparent` context propagation: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer) |
 | **Authentication & RBAC** | JWT Bearer Tokens (HMAC-SHA256) + Role-Based Access Control (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Delivery Semantics** | At-least-once delivery (without unrealistic exactly-once distributed claims) |
 | **Consumer Idempotency** | Message deduplication based on primary key `MessageId` |
 | **Resilience & Fault Tolerance** | Dead-Letter Exchange (DLX), TTL-based Retry Queues (10s, 30s, 90s), and DLQ |
-| **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer Retry/DLQ |
+| **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer (formal broker acknowledgement) |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Automated Testing** | 268 automated tests (166 unit tests + 102 integration tests) |
+| **Automated Testing** | 276 automated tests (166 unit tests + 110 integration tests) |
 | **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -1796,7 +1796,7 @@ FleetOps secures all business operations via **JWT Bearer Authentication** (RFC 
 | `Admin` | Unrestricted infrastructure & operational management | Full access across all API endpoints |
 | `FleetManager` | Fleet operations, assets, and service orders | `/api/vehicles/*`, `/api/drivers/*`, `/api/maintenances/*`, `/api/deliveries/*`, `/api/routes/*` |
 | `Dispatcher` | Transit, shipment dispatch, and route planning | `/api/deliveries/*`, `/api/routes/*` |
-| `Driver` | Operator view | Read-only access to assigned routes and tasks |
+| `Driver` | Operator view | Reserved in RBAC model for future operational query endpoints |
 
 ### Authentication & Token Issuance Flow
 
