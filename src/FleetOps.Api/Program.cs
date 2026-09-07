@@ -19,6 +19,7 @@ builder.Services.AddControllers()
 builder.Services.AddExceptionHandler<FleetOps.Api.Middleware.GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 builder.Services.AddApiHealthChecks();
+builder.Services.AddApiRateLimiting(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
@@ -27,12 +28,14 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapOpenApi();
 app.MapApiHealthChecks();
-app.MapControllers();
+app.MapControllers().RequireRateLimiting(RateLimitingExtensions.DefaultPolicyName);
 
 app.Run();
 
