@@ -117,7 +117,7 @@ public sealed class OutboxService : IOutboxService
                             message.EventType,
                             routingKey,
                             message.Payload,
-                            message.TraceParent ?? activity?.Id,
+                            activity?.Id ?? message.TraceParent,
                             cancellationToken);
                     }
 
