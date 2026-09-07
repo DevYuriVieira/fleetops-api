@@ -22,11 +22,22 @@ public sealed class RabbitMqPublisher : IRabbitMqPublisher
         _logger = logger;
     }
 
+    public Task PublishAsync(
+        Guid messageId,
+        string eventType,
+        string routingKey,
+        string payload,
+        CancellationToken cancellationToken = default)
+    {
+        return PublishAsync(messageId, eventType, routingKey, payload, traceParent: null, cancellationToken);
+    }
+
     public async Task PublishAsync(
         Guid messageId,
         string eventType,
         string routingKey,
         string payload,
+        string? traceParent,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventType);
@@ -51,6 +62,15 @@ public sealed class RabbitMqPublisher : IRabbitMqPublisher
             DeliveryMode = DeliveryModes.Persistent,
             Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds())
         };
+
+        var resolvedTraceParent = traceParent ?? System.Diagnostics.Activity.Current?.Id;
+        if (!string.IsNullOrWhiteSpace(resolvedTraceParent))
+        {
+            properties.Headers = new Dictionary<string, object?>
+            {
+                ["traceparent"] = resolvedTraceParent
+            };
+        }
 
         _logger.LogInformation(
             "Publishing outbox message {MessageId} of type {EventType} with routing key {RoutingKey} to exchange {Exchange}",

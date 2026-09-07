@@ -1,8 +1,10 @@
 namespace FleetOps.Infrastructure.Services;
 
+using System.Diagnostics;
 using System.Text.Json;
 using FleetOps.Application.Abstractions.Events;
 using FleetOps.Infrastructure.Configuration;
+using FleetOps.Infrastructure.Diagnostics;
 using FleetOps.Infrastructure.Messaging;
 using FleetOps.Infrastructure.Persistence;
 using FleetOps.Infrastructure.Persistence.Entities;
@@ -80,6 +82,18 @@ public sealed class OutboxService : IOutboxService
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                ActivityContext parentContext = default;
+                if (!string.IsNullOrWhiteSpace(message.TraceParent) &&
+                    ActivityContext.TryParse(message.TraceParent, null, out var parsedContext))
+                {
+                    parentContext = parsedContext;
+                }
+
+                using var activity = FleetOpsDiagnostics.ActivitySource.StartActivity(
+                    "OutboxService.ProcessMessage",
+                    ActivityKind.Producer,
+                    parentContext);
+
                 try
                 {
                     var domainEvent = OutboxEventRegistry.Deserialize(message.EventType, message.Payload, SerializerOptions);
@@ -103,7 +117,8 @@ public sealed class OutboxService : IOutboxService
                             message.EventType,
                             routingKey,
                             message.Payload,
-                            cancellationToken: cancellationToken);
+                            message.TraceParent ?? activity?.Id,
+                            cancellationToken);
                     }
 
                     message.MarkProcessed(DateTimeOffset.UtcNow);

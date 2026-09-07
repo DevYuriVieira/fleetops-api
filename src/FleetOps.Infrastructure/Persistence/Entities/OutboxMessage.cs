@@ -19,6 +19,7 @@ public sealed class OutboxMessage
     public DateTimeOffset? ProcessedOnUtc { get; private set; }
     public int Attempts { get; private set; }
     public string? Error { get; private set; }
+    public string? TraceParent { get; private set; }
 
     private OutboxMessage()
     {
@@ -30,18 +31,20 @@ public sealed class OutboxMessage
         Guid id,
         DateTimeOffset occurredOnUtc,
         string eventType,
-        string payload)
+        string payload,
+        string? traceParent = null)
     {
         Id = id;
         OccurredOnUtc = occurredOnUtc;
         EventType = eventType;
         Payload = payload;
+        TraceParent = traceParent;
         ProcessedOnUtc = null;
         Attempts = 0;
         Error = null;
     }
 
-    public static OutboxMessage FromDomainEvent(IDomainEvent domainEvent)
+    public static OutboxMessage FromDomainEvent(IDomainEvent domainEvent, string? traceParent = null)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
 
@@ -52,7 +55,8 @@ public sealed class OutboxMessage
             Guid.NewGuid(),
             domainEvent.OccurredOn,
             eventType,
-            payload);
+            payload,
+            traceParent);
     }
 
     public void MarkProcessed(DateTimeOffset processedOnUtc)

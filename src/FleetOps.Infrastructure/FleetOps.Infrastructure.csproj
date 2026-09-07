@@ -17,6 +17,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="RabbitMQ.Client" />
+    <PackageReference Include="Npgsql.OpenTelemetry" />
   </ItemGroup>
 
 </Project>

@@ -43,6 +43,11 @@ public sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outbox
             .HasColumnName("error")
             .IsRequired(false);
 
+        builder.Property(m => m.TraceParent)
+            .HasMaxLength(128)
+            .HasColumnName("trace_parent")
+            .IsRequired(false);
+
         builder.HasIndex(m => m.OccurredOnUtc)
             .HasDatabaseName("ix_outbox_messages_unprocessed")
             .HasFilter("processed_on_utc IS NULL");

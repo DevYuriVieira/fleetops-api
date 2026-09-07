@@ -1,10 +1,12 @@
 namespace FleetOps.Infrastructure.Messaging.Consumers;
 
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using FleetOps.Application.UseCases.Maintenance;
 using FleetOps.Domain.Events;
 using FleetOps.Infrastructure.Configuration;
+using FleetOps.Infrastructure.Diagnostics;
 using FleetOps.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -99,6 +101,19 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
     {
         var messageId = ResolveMessageId(ea.BasicProperties);
         var body = Encoding.UTF8.GetString(ea.Body.ToArray());
+
+        var traceParentHeader = ExtractHeaderString(ea.BasicProperties, "traceparent");
+        ActivityContext parentContext = default;
+        if (!string.IsNullOrWhiteSpace(traceParentHeader) &&
+            ActivityContext.TryParse(traceParentHeader, null, out var parsedContext))
+        {
+            parentContext = parsedContext;
+        }
+
+        using var activity = FleetOpsDiagnostics.ActivitySource.StartActivity(
+            "MaintenanceCompletedConsumer.Process",
+            ActivityKind.Consumer,
+            parentContext);
 
         _logger.LogInformation(
             "Processing message {MessageId} from queue {Queue} with routing key {RoutingKey}",
@@ -324,5 +339,22 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
         }
 
         return 0;
+    }
+
+    private static string? ExtractHeaderString(IReadOnlyBasicProperties properties, string headerName)
+    {
+        if (properties.Headers is not null &&
+            properties.Headers.TryGetValue(headerName, out var value) &&
+            value is not null)
+        {
+            if (value is byte[] bytes)
+            {
+                return Encoding.UTF8.GetString(bytes);
+            }
+
+            return value.ToString();
+        }
+
+        return null;
     }
 }

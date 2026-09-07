@@ -37,12 +37,13 @@ public class FleetOpsDbContext : DbContext
         if (aggregatesWithEvents.Count > 0)
         {
             var outboxMessages = new List<OutboxMessage>();
+            var traceParent = System.Diagnostics.Activity.Current?.Id;
 
             foreach (var aggregate in aggregatesWithEvents)
             {
                 foreach (var domainEvent in aggregate.DomainEvents)
                 {
-                    outboxMessages.Add(OutboxMessage.FromDomainEvent(domainEvent));
+                    outboxMessages.Add(OutboxMessage.FromDomainEvent(domainEvent, traceParent));
                 }
             }
 

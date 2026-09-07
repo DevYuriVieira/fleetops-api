@@ -6,6 +6,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplicationUseCases();
+builder.Services.AddFleetOpsTelemetry(builder.Configuration);
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
