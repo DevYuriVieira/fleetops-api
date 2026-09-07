@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![CI](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml/badge.svg)](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml)
-[![Automated Tests](https://img.shields.io/badge/Tests-283%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![Automated Tests](https://img.shields.io/badge/Tests-289%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -45,9 +45,11 @@
 | **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e Consumer (confirmação formal do broker) |
 | **Controle de Concorrência** | PostgreSQL Unique Constraints + Concorrência Otimista com `xmin` (`xid` system column) |
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
-| **Testes Automatizados** | 283 testes automatizados (166 testes de unidade + 117 testes de integração e falhas) |
+| **Proteção de Runtime** | Rate Limiting em memória por instância (Fixed Window: 100 req/60s, QueueLimit 0) com RFC 9457 (HTTP 429) e `Retry-After` |
+| **Métricas & Observabilidade** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) com disciplina de cardinalidade |
+| **Testes Automatizados** | 289 testes automatizados (166 testes de unidade + 123 testes de integração e falhas) |
 | **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
-| **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
+| **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependências (`/health/dependencies`) |
 
 ---
 
@@ -855,13 +857,13 @@ fleetops/
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **283 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **289 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 117 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         283 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 123 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         289 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
@@ -870,6 +872,9 @@ Resultados da Execução:
 - **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada em runtime via `ActivityListener` da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
 - **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
 - **Testes de Engenharia de Resiliência e Falhas (`FailureInjectionTests`):** Validação empírica de fronteiras de falha com PostgreSQL e RabbitMQ reais: (1) publicação RabbitMQ bem-sucedida com falha simulada na marcação de banco e reentrega tratada de forma idempotente pelo consumidor; (2) crash abrupto do consumidor pós-commit e pré-ACK com reentrega via broker (`Redelivered == true`) mantendo efeito de negócio estritamente único; (3) rollback de transação relacional por violação de integridade física assegurando retenção de eventos de domínio em memória e zero mensagens no Outbox.
+- **Testes de Rate Limiting (`RateLimitingTests`):** Validação da barreira local por instância Fixed Window (100 req/60s, QueueLimit 0), rejeição de requisições excedentes com HTTP 429 Too Many Requests, inclusão do cabeçalho `Retry-After` e payload padronizado RFC 9457 `ProblemDetails`.
+- **Testes de Métricas Operacionais (`MetricsVerificationTests`):** Validação em tempo de execução via `System.Diagnostics.Metrics.MeterListener` da emissão de instrumentos do medidor `FleetOps` (`fleetops.outbox.messages.published`, `fleetops.consumer.messages.processed` e histogramas de latência) com aderência estrita à disciplina de cardinalidade.
+- **Testes de Degradação Graciosa (`GracefulDegradationTests`):** Validação com broker RabbitMQ desativado/parado demonstrando desacoplamento transacional: `/health/ready` responde 200 OK (PostgreSQL saudável), `/health/dependencies` reporta `Degraded` com detalhe por componente, endpoints de escrita persistem transações no PostgreSQL e acumulam mensagens com segurança no Outbox.
 - **Testes de Integração de Persistência:** Executados contra instância real do PostgreSQL, validando migrations, restrições exclusivas, tipos customizados e foreign keys.
 - **Testes de Concorrência Otimista:** Verificação de conflito `xmin` com duas conexões paralelas tentando alterar o mesmo registro.
 - **Testes de Concorrência de Manutenção:** Validação de que o índice parcial `ix_maintenances_vehicle_id` rejeita transações concorrentes criando manutenções simultâneas para o mesmo veículo.
@@ -1149,9 +1154,11 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer (formal broker acknowledgement) |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Automated Testing** | 283 automated tests (166 unit tests + 117 integration and resilience tests) |
+| **Runtime Defense** | In-Process Per-Instance Rate Limiting (Fixed Window: 100 req/60s, QueueLimit 0) with RFC 9457 (HTTP 429) & `Retry-After` |
+| **Metrics & Observability** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) with bounded cardinality |
+| **Automated Testing** | 289 automated tests (166 unit tests + 123 integration and resilience tests) |
 | **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
-| **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
+| **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependencies (`/health/dependencies`) |
 
 ---
 
@@ -1922,13 +1929,13 @@ fleetops/
 
 ## 23. Testing
 
-FleetOps includes **283 automated tests** executing with 100% pass rate:
+FleetOps includes **289 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 117 Passed (0 Failed, 0 Skipped)
-  Total:                         283 Passed across all suites
+  FleetOps.IntegrationTests.dll: 123 Passed (0 Failed, 0 Skipped)
+  Total:                         289 Passed across all suites
 ```
 
 ### Key Test Categories
@@ -1937,6 +1944,9 @@ Suite Execution Summary:
 - **Distributed Tracing Tests (`TracingPropagationTests`):** Automated runtime verification via `ActivityListener` of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
 - **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
 - **Resilience & Failure Injection Tests (`FailureInjectionTests`):** Empirical failure boundary validation using real PostgreSQL and RabbitMQ: (1) successful RabbitMQ publication with database update failure and idempotent consumer redelivery; (2) abrupt consumer crash post-commit and pre-ACK with broker redelivery (`Redelivered == true`) preserving a single business effect; (3) database transaction rollback on physical constraint violation ensuring in-memory domain event retention and zero committed Outbox messages.
+- **Rate Limiting Tests (`RateLimitingTests`):** Validates local per-instance Fixed Window rate limiting (100 req/60s, QueueLimit 0), HTTP 429 Too Many Requests response code, `Retry-After` response header, and sanitized RFC 9457 `ProblemDetails` payload.
+- **Operational Metrics Tests (`MetricsVerificationTests`):** Validates runtime emission of meters and instruments via `System.Diagnostics.Metrics.MeterListener` (`fleetops.outbox.messages.published`, `fleetops.consumer.messages.processed`, latency histograms) with bounded cardinality.
+- **Graceful Degradation Tests (`GracefulDegradationTests`):** Validates transactional decoupling when RabbitMQ broker is offline: `/health/ready` returns 200 OK (PostgreSQL alive), `/health/dependencies` reports `Degraded` with dependency breakdowns, command writes commit to PostgreSQL, and messages accumulate safely in Outbox.
 - **Persistence Integration Tests:** Executed against PostgreSQL, validating migrations, partial unique indexes, and schema constraints.
 - **Optimistic Concurrency Tests:** Validates `xmin` version conflict detection under simulated concurrent updates.
 - **Mutual Exclusion Tests:** Asserts that database partial unique index `ix_maintenances_vehicle_id` rejects simultaneous maintenance orders for the same vehicle.
@@ -2160,24 +2170,85 @@ Formal Architecture Decision Records documenting engineering decisions, problem 
 | [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Primary-key deduplication within the audited business transaction boundary |
 | [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast startup validation with no insecure secret fallbacks |
 | [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Strict demarcation between in-memory local limits and edge/gateway distributed control |
+| [ADR-010](docs/adr/ADR-010-in-process-rate-limiting.md) | In-Process Fixed Window Rate Limiting with Boundary Demarcation | Accepted | Node-level resource defense with RFC 9457 429 and Retry-After header |
+| [ADR-011](docs/adr/ADR-011-health-checks-and-dependency-readiness.md) | Health Check Probing Semantics: Live, Ready, and Degraded Dependencies | Accepted | Decoupled liveness, readiness, and degraded multi-dependency diagnostics |
+| [ADR-012](docs/adr/ADR-012-operational-metrics-and-telemetry.md) | Operational Metrics and Telemetry Cardinality Discipline | Accepted | System.Diagnostics.Metrics with bounded dimensions for Outbox and Consumer |
+| [ADR-013](docs/adr/ADR-013-load-testing-and-performance-baseline.md) | Empirical Performance Baseline via k6 | Accepted | Automated reproducible load, sustained, and spike profiles without fantasy benchmarks |
+| [ADR-014](docs/adr/ADR-014-sli-slo-and-error-budget-framework.md) | Service Level Objectives (SLOs) and Error Budget Framework | Accepted | Mathematically grounded SLIs/SLOs covering latency, availability, and processing delay |
 
 ---
 
-## 33. Roadmap
+## 33. Operational Runbooks
+
+Standard Operating Procedures (SOP) and incident remediation runbooks for on-call engineers:
+
+| Runbook | Scenario & Primary Trigger | Detection & Alert | Mitigation Action |
+|---|---|---|---|
+| [PostgreSQL Outage](docs/runbooks/postgresql-unavailable.md) | PostgreSQL database offline, connection refused, or pool exhausted | Readiness `/health/ready` returns 503; error spikes | Verify storage/WAL, check connection pool, fail over to standby |
+| [RabbitMQ Outage](docs/runbooks/rabbitmq-unavailable.md) | Message broker offline or connection refused | Diagnostic `/health/dependencies` reports Degraded; outbox backlog growth | System gracefully persists commands; restart broker or repair cluster; outbox drains automatically |
+| [Outbox Backlog Accumulation](docs/runbooks/outbox-backlog.md) | Unprocessed outbox records exceed threshold (`> 500`) | Metric `fleetops.outbox.backlog.count`; publication failure count | Inspect broker network, adjust worker batch size or horizontal worker replicas |
+| [Consumer Redeliveries & DLQ](docs/runbooks/consumer-redelivery-and-dlq.md) | Messages accumulating in Dead-Letter Queue (`fleetops.events.dlq`) | Metric `fleetops.consumer.messages.failed`; DLQ depth `> 0` | Inspect poison message payload, verify downstream schema, replay or purge |
+
+---
+
+## 34. Service Level Objectives (SLOs) & Error Budgets
+
+Target SLOs established under empirical operating characteristics:
+
+| Service / Flow | Service Level Indicator (SLI) | SLO Target (30-day Rolling) | Monthly Error Budget | Budget Burn Alert Threshold |
+|---|---|---|---|---|
+| **API Synchronous Writes** | Successful HTTP responses (`2xx` or `4xx` client error vs `5xx` server faults) | $\ge 99.9\%$ Availability | 0.10% (43.2 min downtime) | 2% burn in 1 hour; 5% burn in 6 hours |
+| **API Synchronous Latency** | P95 response duration on `/api/*` endpoints | $\le 250\text{ ms}$ (P95) | 5% tail samples exceeding 250 ms | 10% exceeding in 15-minute window |
+| **Outbox Relay Latency** | Time between `occurred_on_utc` and broker publication ACK | $\le 5.0\text{ s}$ (P95) | 5% events delayed beyond 5s | Unprocessed backlog $> 500$ messages for $> 2\text{ min}$ |
+| **Consumer Processing Latency** | Time from consumer dispatch to transactional commit and ACK | $\le 100\text{ ms}$ (P95) | 5% messages delayed beyond 100 ms | Consumer failure count $> 10$ in 1 minute |
+
+---
+
+## 35. Empirical Performance Baseline (k6 Benchmarks)
+
+Empirical load testing executed with **k6 v0.56.0** against the production Release build of FleetOps API on local host infrastructure:
+
+```text
+Host Environment:
+  OS: Windows 11 / AMD Ryzen / 16 cores
+  PostgreSQL: 18 (Local instance on port 5433)
+  RabbitMQ: 3.13 (Local instance on port 5672)
+  Build: Release (--configuration Release)
+```
+
+| Scenario | Concurrency (VUs) | Duration | Total Requests | Throughput (RPS) | P50 Latency | P90 Latency | P95 Latency | Max Latency | Error Rate |
+|---|---|---|---|---|---|---|---|---|---|
+| **Baseline Load** | 5 VUs | 30s | 2,764 | **91.81 req/s** | 2.69 ms | 9.17 ms | 10.34 ms | 74.56 ms | **0.00%** (0 / 2,764) |
+| **Sustained Load** | 15 VUs | 30s | 17,123 | **568.74 req/s** | 565 µs | 1.77 ms | 2.41 ms | 83.80 ms | **0.00%** (0 / 17,123) |
+| **Traffic Spike** | Ramp to 40 VUs | 20s | 16,178 | **808.09 req/s** | 592 µs | 1.59 ms | 2.10 ms | 9.49 ms | **0.00%** (0 / 16,178) |
+
+```bash
+# How to run reproducible benchmarks locally:
+./load-tests/run-benchmarks.ps1 -BaseUrl "http://localhost:5000"
+```
+
+---
+
+## 36. Roadmap
 
 Planned future enhancements:
 - [x] **Authentication & Role-Based Access Control:** Native JWT Bearer token generation and RBAC authorization policies (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
 - [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
 - [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
 - [x] **CI/CD Automation:** GitHub Actions CI workflow with clean containerized PostgreSQL and RabbitMQ execution.
-- [x] **Formal Architecture & Failure Engineering:** 9 formal ADRs and real-infrastructure failure injection integration test suite.
+- [x] **Formal Architecture & Failure Engineering:** 14 formal ADRs and real-infrastructure failure injection integration test suite (289 tests).
+- [x] **Operational Metrics:** Native `System.Diagnostics.Metrics.Meter("FleetOps")` instrumentation adhering to strict cardinality discipline.
+- [x] **In-Process Rate Limiting:** ASP.NET Core Fixed Window rate limiting with RFC 9457 `ProblemDetails` (HTTP 429) and `Retry-After`.
+- [x] **Health Probing Semantics:** Clean separation of `/health/live`, `/health/ready`, and `/health/dependencies` with graceful degradation reporting.
+- [x] **Empirical Performance Baseline:** Reproducible k6 benchmark suite measuring throughput (up to 808 RPS) and sub-millisecond latencies.
+- [x] **Operational Runbooks:** SRE procedures for PostgreSQL outages, RabbitMQ broker downtime, outbox backlogs, and DLQ handling.
 - [ ] **External OIDC Integration:** Federated identity integration with Keycloak or Auth0.
-- [ ] **Prometheus Metrics & Grafana Dashboards:** Queue latency, retry rate, and processing throughput metrics.
+- [ ] **Prometheus Exporter & Grafana Dashboards:** Pre-built dashboards for outbox latency, retry rates, and consumer throughput.
 - [ ] **Kubernetes Manifests:** Production Helm charts with StatefulSet storage configurations and HPA rules.
 
 ---
 
-## 34. Author
+## 37. Author
 
 **Author:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
