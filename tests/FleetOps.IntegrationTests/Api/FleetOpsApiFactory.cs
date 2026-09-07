@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -41,9 +42,14 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
                 services.Remove(descriptor);
             }
 
-            services.AddDbContext<FleetOpsDbContext>((_, options) =>
+            services.AddDbContext<FleetOpsDbContext>((sp, options) =>
             {
-                options.UseNpgsql(ConnectionString, npgsqlOptions =>
+                var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+                var connString = config.GetConnectionString("DefaultConnection")
+                    ?? config["POSTGRES_CONNECTION_STRING"]
+                    ?? ConnectionString;
+
+                options.UseNpgsql(connString, npgsqlOptions =>
                 {
                     npgsqlOptions.MigrationsAssembly(typeof(FleetOpsDbContext).Assembly.FullName);
                     npgsqlOptions.EnableRetryOnFailure(
