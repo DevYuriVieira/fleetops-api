@@ -9,7 +9,8 @@
 [![EF Core 10](https://img.shields.io/badge/EF%20Core-10.0-512BD4?logo=dotnet&logoColor=white)](https://learn.microsoft.com/ef/core/)
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Automated Tests](https://img.shields.io/badge/Tests-260%20Passing-brightgreen?logo=xunit&logoColor=white)](#21-testing)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+[![Automated Tests](https://img.shields.io/badge/Tests-268%20Passing-brightgreen?logo=xunit&logoColor=white)](#21-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#28-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -34,14 +35,17 @@
 | **Mapeamento Objeto-Relacional** | Entity Framework Core 10.0.11 + Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 |
 | **Mensageria Assíncrona** | RabbitMQ 3.x com RabbitMQ.Client 7.2.2 (Async API) |
 | **Confiabilidade de Eventos** | Transactional Outbox Pattern integrado ao `DbContext.SaveChangesAsync` |
+| **Concorrência no Outbox** | `FOR UPDATE SKIP LOCKED` (Multi-réplica em pods paralelos sem lock contention ou duplicações) |
+| **Rastreamento Distribuído** | OpenTelemetry .NET + Jaeger (Propagação W3C `traceparent` de ponta a ponta: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) |
+| **Autenticação & Autorização** | JWT Bearer Tokens (HMAC-SHA256) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Semântica de Entrega** | At-least-once delivery (sem promessas irreais de exactly-once distribuído) |
 | **Idempotência de Consumo** | Desduplicação baseada em chave primária `MessageId` |
 | **Controle de Resiliência** | Dead-Letter Exchange (DLX), Filas TTL de Retry (10s, 30s, 90s) e Dead-Letter Queue (DLQ) |
 | **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e no Consumer Retry/DLQ |
 | **Controle de Concorrência** | PostgreSQL Unique Constraints + Concorrência Otimista com `xmin` (`xid` system column) |
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
-| **Testes Automatizados** | 260 testes automatizados (166 testes de unidade + 94 testes de integração) |
-| **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose |
+| **Testes Automatizados** | 268 testes automatizados (166 testes de unidade + 102 testes de integração) |
+| **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
 ---
@@ -460,6 +464,53 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 }
 ```
 
+### Concorrência Multi-Réplica com `FOR UPDATE SKIP LOCKED`
+
+Em arquiteturas cloud escaláveis com múltiplos pods da API em execução paralela (Kubernetes HPA ou instâncias de microsserviços), múltiplos processos `OutboxProcessor` realizam polling concorrente na tabela `outbox_messages`. Sem controle defensivo de concorrência a nível de linha, múltiplas instâncias leriam as mesmas mensagens simultaneamente, provocando **publicações duplicadas no broker RabbitMQ**, contenção de locks e potenciais deadlocks nas tentativas de atualização.
+
+O FleetOps resolve essa concorrência através do bloqueio pessimista a nível de linha com **`FOR UPDATE SKIP LOCKED`**, executado sob transação ACID via EF Core `ExecutionStrategy`:
+
+```sql
+SELECT * FROM outbox_messages
+WHERE processed_on_utc IS NULL AND attempts < @maxAttempts
+ORDER BY occurred_on_utc
+LIMIT @batchSize
+FOR UPDATE SKIP LOCKED;
+```
+
+```csharp
+var strategy = _context.Database.CreateExecutionStrategy();
+
+return await strategy.ExecuteAsync(async () =>
+{
+    await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+    var messages = await _context.OutboxMessages
+        .FromSqlRaw(
+            """
+            SELECT * FROM outbox_messages
+            WHERE processed_on_utc IS NULL AND attempts < {0}
+            ORDER BY occurred_on_utc
+            LIMIT {1}
+            FOR UPDATE SKIP LOCKED
+            """,
+            _options.MaxAttempts,
+            _options.BatchSize)
+        .ToListAsync(cancellationToken);
+
+    // Processa, despacha e publica no RabbitMQ com trace context...
+    await _context.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
+
+    return processedCount;
+});
+```
+
+**Benefícios Arquiteturais Comprovados:**
+1. **Particionamento Dinâmico de Carga:** Se a Réplica 1 seleciona as mensagens 1 a 20, o PostgreSQL bloqueia essas linhas. Quando a Réplica 2 executa a query simultaneamente, o `SKIP LOCKED` faz com que o banco **ignore imediatamente as linhas bloqueadas sem esperar**, selecionando as mensagens 21 a 40.
+2. **Zero Lock Wait & Zero Deadlocks:** Nenhuma réplica fica enfileirada esperando liberação de lock de outra instância. A latência de consulta é instantânea.
+3. **Isolamento de Falha:** Se uma réplica sofrer um crash abrupto enquanto processa seu lote, a transação correspondente é abortada e o PostgreSQL libera os locks automaticamente, permitindo que a próxima réplica ativa processe as mensagens restantes.
+
 ---
 
 ## 10. Mensageria com RabbitMQ (Messaging Architecture)
@@ -605,7 +656,12 @@ Ao despachar uma mensagem com falha para a fila de retry ou para a DLQ, o consum
 
 Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estritos:
 
-### Veículos (`/api/vehicles`)
+### Autenticação (`/api/auth`) — `[AllowAnonymous]`
+| Método | Rota | Objetivo | Sucesso |
+|:---:|:---|:---|:---:|
+| `POST` | `/api/auth/token` | Gerar token JWT assinado para autenticação e testes RBAC | `200 OK` |
+
+### Veículos (`/api/vehicles`) — Roles: `Admin`, `FleetManager`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/vehicles` | Cadastrar novo veículo na frota | `201 Created` |
@@ -617,7 +673,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 | `POST` | `/api/vehicles/{id}/send-to-maintenance` | Enviar veículo para manutenção | `200 OK` |
 | `POST` | `/api/vehicles/{id}/return-from-maintenance` | Retornar veículo da manutenção para ativo | `200 OK` |
 
-### Motoristas (`/api/drivers`)
+### Motoristas (`/api/drivers`) — Roles: `Admin`, `FleetManager`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/drivers` | Registrar novo motorista (CNH única) | `201 Created` |
@@ -625,7 +681,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 | `POST` | `/api/drivers/{id}/deactivate` | Desativar motorista | `200 OK` |
 | `POST` | `/api/drivers/{id}/suspend` | Suspender motorista com justificativa | `200 OK` |
 
-### Entregas (`/api/deliveries`)
+### Entregas (`/api/deliveries`) — Roles: `Admin`, `FleetManager`, `Dispatcher`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/deliveries` | Criar nova ordem de entrega com código de rastreio | `201 Created` |
@@ -634,7 +690,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 | `POST` | `/api/deliveries/{id}/complete` | Registrar conclusão e entrega ao destinatário | `200 OK` |
 | `POST` | `/api/deliveries/{id}/cancel` | Cancelar entrega com justificativa | `200 OK` |
 
-### Rotas (`/api/routes`)
+### Rotas (`/api/routes`) — Roles: `Admin`, `FleetManager`, `Dispatcher`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/routes` | Criar itinerário de rota | `201 Created` |
@@ -645,7 +701,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 | `POST` | `/api/routes/{id}/complete` | Concluir trajeto da rota | `200 OK` |
 | `POST` | `/api/routes/{id}/cancel` | Cancelar rota planejada ou em trânsito | `200 OK` |
 
-### Manutenção (`/api/maintenances`)
+### Manutenção (`/api/maintenances`) — Roles: `Admin`, `FleetManager`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/maintenances` | Agendar manutenção para veículo | `201 Created` |
@@ -653,7 +709,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 | `POST` | `/api/maintenances/{id}/complete` | Finalizar manutenção com registro de custos | `200 OK` |
 | `POST` | `/api/maintenances/{id}/cancel` | Cancelar ordem de manutenção | `200 OK` |
 
-### Observabilidade e Especificação
+### Observabilidade e Especificação — `[AllowAnonymous]`
 | Método | Rota | Objetivo | Sucesso |
 |:---:|:---|:---|:---:|
 | `GET` | `/health/live` | Liveness Probe (processo do ASP.NET Core ativo) | `200 OK` |
@@ -682,7 +738,88 @@ Erros e exceções gerados na aplicação são interceptados centralizadamente p
 
 ---
 
-## 19. Observabilidade e Health Checks
+## 19. Autenticação e Controle de Acesso Baseado em Papéis (JWT & RBAC)
+
+A API protege seus recursos através de autenticação **JWT Bearer** (RFC 7519) com assinatura criptográfica HMAC-SHA256 e controle granular de autorização baseado em papéis (**RBAC - Role-Based Access Control**):
+
+### Matriz de Papéis e Permissões
+
+| Papel (Role) | Escopo de Atuação | Endpoints Autorizados |
+|---|---|---|
+| `Admin` | Gestão irrestrita de infraestrutura e negócios | Acesso total a todos os recursos da API |
+| `FleetManager` | Gestão operacional de frota e ativos | `/api/vehicles/*`, `/api/drivers/*`, `/api/maintenances/*`, `/api/deliveries/*`, `/api/routes/*` |
+| `Dispatcher` | Gestão logística de tráfego e despachos | `/api/deliveries/*`, `/api/routes/*` |
+| `Driver` | Acesso operacional de condutor | Consulta de rotas e tarefas designadas (permissões de leitura) |
+
+### Fluxo de Autenticação e Emissão de Token
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Cliente / Aplicação Externa
+    participant Auth as POST /api/auth/token
+    participant API as Endpoints Protegidos (/api/vehicles...)
+
+    Client->>Auth: {"username": "gestor1", "role": "FleetManager"}
+    Auth-->>Client: 200 OK {"accessToken": "eyJhbG...", "tokenType": "Bearer", "expiresIn": 28800}
+
+    Client->>API: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
+    Note over API: Valida assinatura, emissor, audiência, expiração e Role
+    API-->>Client: 201 Created (Operação Autorizada)
+
+    Client->>API: POST /api/vehicles (Sem header ou token inválido)
+    API-->>Client: 401 Unauthorized
+
+    Client->>API: POST /api/vehicles (Com Role: Driver)
+    API-->>Client: 403 Forbidden
+```
+
+---
+
+## 20. Rastreamento Distribuído Ponta a Ponta (OpenTelemetry & Jaeger)
+
+Em sistemas orientados a eventos com processamento assíncrono desacoplado, entender a causalidade de uma operação que atravessa HTTP, banco de dados, filas e consumidores em segundo plano é um dos maiores desafios de observabilidade.
+
+O FleetOps implementa rastreamento distribuído completo seguindo a especificação **W3C Trace Context** (`traceparent`), correlacionando cada requisição HTTP original ao seu ciclo assíncrono downstream no RabbitMQ e no consumidor:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Cliente HTTP
+    participant API as FleetOps.Api (HTTP Inbound)
+    participant DB as PostgreSQL (outbox_messages)
+    participant Outbox as OutboxService (Producer)
+    participant Broker as RabbitMQ (fleetops.events)
+    participant Consumer as MaintenanceCompletedConsumer
+    participant Jaeger as Jaeger (Visualização OTLP)
+
+    Client->>API: POST /api/maintenances/{id}/complete (TraceID gerado automaticamente)
+    API->>DB: Salva entidade + grava OutboxMessage com trace_parent
+    API->>Jaeger: Exporta Span HTTP (AspNetCoreInstrumentation)
+    API-->>Client: 200 OK
+
+    Note over DB,Outbox: Ciclo Assíncrono Outbox
+    Outbox->>DB: Polling com FOR UPDATE SKIP LOCKED
+    Outbox->>Outbox: Restaura ActivityContext a partir de message.TraceParent
+    Outbox->>Broker: BasicPublish com Header AMQP: traceparent
+    Outbox->>Jaeger: Exporta Span "OutboxService.ProcessMessage" (Child Span)
+
+    Note over Broker,Consumer: Consumo Assíncrono Idempotente
+    Broker->>Consumer: Entrega mensagem com header traceparent
+    Consumer->>Consumer: Extrai traceparent e inicia Activity com ParentContext
+    Consumer->>DB: Executa caso de uso idempotente sob transação
+    Consumer->>Jaeger: Exporta Span "MaintenanceCompletedConsumer.Process" (Child Span)
+    Consumer->>Broker: BasicAckAsync
+```
+
+### Visualização no Jaeger UI
+Todos os spans são exportados via protocolo OTLP gRPC (`port 4317`) diretamente para o serviço Jaeger all-in-one provisionado no `compose.yaml`:
+- **Interface Web do Jaeger:** `http://localhost:16686`
+- **Linha do Tempo Causal:** Permite inspecionar a latência exata de ponta a ponta, identificando quanto tempo o evento permaneceu na tabela Outbox até a publicação e quanto tempo transcorreu até o processamento definitivo no consumidor.
+
+---
+
+## 21. Observabilidade e Health Checks
 
 A API provê probes compatíveis com orquestradores de containers:
 - **Liveness (`/health/live`):** Avaliação ultra-leve sem I/O externo. Responde `200 OK` confirmando que a thread de execução do processo está ativa.
@@ -690,11 +827,11 @@ A API provê probes compatíveis com orquestradores de containers:
 
 ---
 
-## 20. Estrutura do Repositório (Project Structure)
+## 22. Estrutura do Repositório (Project Structure)
 
 ```text
 fleetops/
-├── compose.yaml                      # Orquestração local de containers (API, PostgreSQL, RabbitMQ)
+├── compose.yaml                      # Orquestração local (API, PostgreSQL, RabbitMQ, Jaeger)
 ├── Dockerfile                        # Multi-stage build .NET 10 (non-root $APP_UID)
 ├── .dockerignore                     # Filtros de exclusão de artefatos de compilação
 ├── .editorconfig                     # Padrões de formatação e análise estática de código
@@ -706,28 +843,30 @@ fleetops/
 ├── src/
 │   ├── FleetOps.Domain/              # Núcleo DDD: Aggregates, ValueObjects, Events (zero dependências)
 │   ├── FleetOps.Application/         # Casos de uso (28 comandos), DTOs, interfaces de persistência
-│   ├── FleetOps.Infrastructure/      # EF Core 10, PostgreSQL, RabbitMQ Publisher & Consumer, Outbox
-│   └── FleetOps.Api/                 # Controllers, ProblemDetails, OpenAPI 3.1, Health Probes
+│   ├── FleetOps.Infrastructure/      # EF Core 10, PostgreSQL, RabbitMQ Publisher & Consumer, Outbox, Diagnostics
+│   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 94 testes de integração com PostgreSQL e RabbitMQ reais
+    └── FleetOps.IntegrationTests/    # 102 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API)
 ```
 
 ---
 
-## 21. Estratégia de Testes Automatizados (Testing)
+## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **260 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **268 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll:  94 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         260 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 102 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         268 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
-- **Testes de Arquitetura:** Verificação reflexiva estrita garantindo que `Domain` e `Application` não referenciem bibliotecas proibidas (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Garante também que todos os métodos de controllers e casos de uso aceitem `CancellationToken`.
+- **Testes de Arquitetura:** Verificação reflexiva estrita garantindo que `Domain` e `Application` não referenciem bibliotecas proibidas (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Garante também que todos os métodos de controllers e casos de uso aceitem `CancellationToken` e retornem `Task`.
+- **Testes de Autenticação e RBAC (`AuthApiTests`):** Validação de emissão de tokens JWT, rejeição de credenciais inválidas, resposta HTTP 401 Unauthorized para acessos sem token e HTTP 403 Forbidden para papéis insuficientes (ex: `Driver` tentando cadastrar veículos).
+- **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
 - **Testes de Integração de Persistência:** Executados contra instância real do PostgreSQL, validando migrations, restrições exclusivas, tipos customizados e foreign keys.
 - **Testes de Concorrência Otimista:** Verificação de conflito `xmin` com duas conexões paralelas tentando alterar o mesmo registro.
 - **Testes de Concorrência de Manutenção:** Validação de que o índice parcial `ix_maintenances_vehicle_id` rejeita transações concorrentes criando manutenções simultâneas para o mesmo veículo.
@@ -743,7 +882,7 @@ Resultados da Execução:
 
 ---
 
-## 22. Ambiente Containerizado (Docker & Compose)
+## 24. Ambiente Containerizado (Docker & Compose)
 
 O arquivo `compose.yaml` provisiona a infraestrutura completa:
 
@@ -753,10 +892,12 @@ graph TD
         API["fleetops-api (:5000 &rarr; :8080)"]
         PG["postgres (:5432 &rarr; :5432)"]
         RMQ["rabbitmq (:5672 &rarr; :5672, :15672 &rarr; :15672)"]
+        Jaeger["jaeger (:16686 &rarr; :16686, :4317 &rarr; :4317)"]
     end
     
     API -->|"depends_on: service_healthy"| PG
     API -->|"depends_on: service_healthy"| RMQ
+    API -->|"depends_on: service_started"| Jaeger
     PG --- VolPG[("Volume: fleetops-postgres-data")]
     RMQ --- VolRMQ[("Volume: fleetops-rabbitmq-data")]
 ```
@@ -764,7 +905,7 @@ graph TD
 ### Destaques de Engenharia de Containers
 - **Multi-Stage Build:** Separa o estágio de compilação SDK (`dotnet/sdk:10.0`) da imagem de runtime final (`dotnet/aspnet:10.0`), reduzindo a superfície de ataque e tamanho da imagem.
 - **Usuário Não-Privilegiado:** Executa no container sob o usuário nativo `$APP_UID` (não-root).
-- **Ordenação de Inicialização:** A API declara `depends_on: service_healthy` para o PostgreSQL e RabbitMQ, impedindo falhas de inicialização prematuras.
+- **Ordenação de Inicialização:** A API declara `depends_on: service_healthy` para o PostgreSQL e RabbitMQ, e `service_started` para o Jaeger, impedindo falhas de inicialização prematuras.
 - **Healthchecks Nativos:**
   - PostgreSQL avaliado via `pg_isready -U fleetops_dev -d fleetops`.
   - RabbitMQ avaliado via `rabbitmq-diagnostics -q ping`.
@@ -772,17 +913,20 @@ graph TD
 
 ---
 
-## 23. Pilha Tecnológica (Technology Stack)
+## 25. Pilha Tecnológica (Technology Stack)
 
 | Componente | Versão Real no Projeto | Propósito no Ecossistema |
 |---|---|---|
 | **Linguagem C#** | C# 14 | Sintaxe moderna, tipagem estrita e imutabilidade com `record` |
 | **Plataforma .NET** | .NET 10.0 | Runtime de execução de alto desempenho |
 | **Framework HTTP** | ASP.NET Core 10.0.11 | Roteamento REST, DI e pipeline de middlewares |
+| **Autenticação & RBAC** | JwtBearer 10.0.11 | Assinatura HMAC-SHA256 e autorização declarativa por papéis |
 | **Banco de Dados** | PostgreSQL 18-alpine | Armazenamento relacional ACID, índices parciais e `xmin` |
 | **Provedor ORM** | EF Core 10.0.11 / Npgsql 10.0.3 | Mapeamento relacional e controle transacional |
 | **Broker de Mensagens** | RabbitMQ 3-management-alpine | Fila de mensageria assíncrona, trocas e DLQ |
 | **Cliente RabbitMQ** | RabbitMQ.Client 7.2.2 | Comunicação assíncrona nativa com Publisher Confirms |
+| **Rastreamento Distribuído** | OpenTelemetry 1.15.3 | Instrumentação e exportação de traces W3C via OTLP |
+| **Visualizador de Traces** | Jaeger all-in-one | Servidor OTLP e UI de visualização distribuída |
 | **Framework de Testes**| xUnit 2.9.3 | Execução de testes unitários e de integração |
 | **Host de Testes Web** | Microsoft.AspNetCore.Mvc.Testing 10.0.11 | Servidor in-memory para testes E2E de API |
 | **Documentação API** | Microsoft.AspNetCore.OpenApi 10.0.11 | Geração nativa de OpenAPI 3.1 |
@@ -944,10 +1088,13 @@ sequenceDiagram
 ## 30. Roadmap de Evoluções Futuras
 
 Itens previstos para iterações futuras no ciclo do produto:
-- **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC com OpenID Connect (Keycloak/OIDC).
-- **OpenTelemetry & Observabilidade:** Exportação de métricas OTLP, traces distribuídos integrados ao Jaeger e dashboards estruturados no Prometheus/Grafana.
-- **Pipeline CI/CD:** Automação de linting, validação de arquitetura e execução da suíte de testes via GitHub Actions.
-- **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
+- [x] **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC nativo com suporte a múltiplos papéis (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
+- [x] **OpenTelemetry & Rastreamento Distribuído:** Exportação OTLP de spans de ponta a ponta correlacionados via W3C `traceparent` (HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) e visualização integrada no Jaeger.
+- [x] **Concorrência de Outbox Multi-Réplica:** Bloqueio defensivo de linha com `FOR UPDATE SKIP LOCKED` para alta escalabilidade horizontal sem lock contention.
+- [ ] **Integração Externa OIDC:** Provedor federado de identidade com Keycloak ou Auth0.
+- [ ] **Métricas Prometheus & Dashboards Grafana:** Métricas customizadas de latência de fila, taxas de retry e contadores de mensagens processadas.
+- [ ] **Pipeline CI/CD:** Automação de linting, validação de arquitetura e execução da suíte de testes via GitHub Actions.
+- [ ] **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
 
 ---
 
@@ -971,14 +1118,17 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **ORM & Driver** | Entity Framework Core 10.0.11 + Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 |
 | **Asynchronous Messaging** | RabbitMQ 3.x with RabbitMQ.Client 7.2.2 (Async API) |
 | **Event Reliability** | Transactional Outbox Pattern integrated into `DbContext.SaveChangesAsync` |
+| **Outbox Concurrency** | `FOR UPDATE SKIP LOCKED` (Multi-replica polling across parallel pods with zero lock contention or duplicate dispatches) |
+| **Distributed Tracing** | OpenTelemetry .NET + Jaeger (End-to-end W3C `traceparent` context propagation: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer) |
+| **Authentication & RBAC** | JWT Bearer Tokens (HMAC-SHA256) + Role-Based Access Control (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Delivery Semantics** | At-least-once delivery (without unrealistic exactly-once distributed claims) |
 | **Consumer Idempotency** | Message deduplication based on primary key `MessageId` |
 | **Resilience & Fault Tolerance** | Dead-Letter Exchange (DLX), TTL-based Retry Queues (10s, 30s, 90s), and DLQ |
 | **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer Retry/DLQ |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Automated Testing** | 260 automated tests (166 unit tests + 94 integration tests) |
-| **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose |
+| **Automated Testing** | 268 automated tests (166 unit tests + 102 integration tests) |
+| **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
 ---
@@ -1366,6 +1516,55 @@ Result: Database state persisted, but domain event lost forever.
 6. The background OutboxProcessor polls pending records and safely publishes to RabbitMQ.
 ```
 
+### Multi-Replica Concurrency via `FOR UPDATE SKIP LOCKED`
+
+In distributed cloud deployments running multiple API pods/replicas (Kubernetes HPA or clustered containers), multiple `OutboxProcessor` instances poll the `outbox_messages` table simultaneously. Without row-level locking controls, concurrent replicas would select identical pending batches, causing:
+1. **Duplicate event dispatches** to RabbitMQ.
+2. Row-level update lock contention and database deadlocks.
+
+FleetOps prevents this by implementing PostgreSQL's pessimistic row-level locking via **`FOR UPDATE SKIP LOCKED`**, encapsulated within an ACID transaction managed by EF Core's `ExecutionStrategy`:
+
+```sql
+SELECT * FROM outbox_messages
+WHERE processed_on_utc IS NULL AND attempts < @maxAttempts
+ORDER BY occurred_on_utc
+LIMIT @batchSize
+FOR UPDATE SKIP LOCKED;
+```
+
+```csharp
+var strategy = _context.Database.CreateExecutionStrategy();
+
+return await strategy.ExecuteAsync(async () =>
+{
+    await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+    var messages = await _context.OutboxMessages
+        .FromSqlRaw(
+            """
+            SELECT * FROM outbox_messages
+            WHERE processed_on_utc IS NULL AND attempts < {0}
+            ORDER BY occurred_on_utc
+            LIMIT {1}
+            FOR UPDATE SKIP LOCKED
+            """,
+            _options.MaxAttempts,
+            _options.BatchSize)
+        .ToListAsync(cancellationToken);
+
+    // Process, dispatch, and publish to RabbitMQ with trace context...
+    await _context.SaveChangesAsync(cancellationToken);
+    await transaction.CommitAsync(cancellationToken);
+
+    return processedCount;
+});
+```
+
+**Key Architectural Guarantees:**
+1. **Zero Contention Load Partitioning:** If Pod 1 locks rows 1–20, Pod 2 executing concurrently **immediately skips** rows 1–20 without blocking or waiting, instantaneously fetching rows 21–40.
+2. **Zero Lock Wait Time:** No replica ever blocks on another replica's lock (`lock_wait = 0ms`).
+3. **Crash Fault Isolation:** If a replica crashes mid-execution, PostgreSQL automatically releases the row locks on transaction abort, allowing surviving replicas to pick up the remaining messages on the next polling cycle.
+
 ---
 
 ## 10. RabbitMQ Messaging
@@ -1507,7 +1706,12 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 
 ## 17. REST API Endpoints
 
-### Vehicles (`/api/vehicles`)
+### Authentication (`/api/auth`) — `[AllowAnonymous]`
+| Method | Route | Purpose | Success |
+|:---:|:---|:---|:---:|
+| `POST` | `/api/auth/token` | Issue signed JWT Bearer token for testing and RBAC validation | `200 OK` |
+
+### Vehicles (`/api/vehicles`) — Roles: `Admin`, `FleetManager`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/vehicles` | Register vehicle asset | `201 Created` |
@@ -1519,7 +1723,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 | `POST` | `/api/vehicles/{id}/send-to-maintenance` | Transition vehicle to maintenance | `200 OK` |
 | `POST` | `/api/vehicles/{id}/return-from-maintenance` | Return vehicle to active status | `200 OK` |
 
-### Drivers (`/api/drivers`)
+### Drivers (`/api/drivers`) — Roles: `Admin`, `FleetManager`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/drivers` | Register driver with unique license | `201 Created` |
@@ -1527,7 +1731,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 | `POST` | `/api/drivers/{id}/deactivate` | Deactivate driver | `200 OK` |
 | `POST` | `/api/drivers/{id}/suspend` | Suspend driver with mandatory reason | `200 OK` |
 
-### Deliveries (`/api/deliveries`)
+### Deliveries (`/api/deliveries`) — Roles: `Admin`, `FleetManager`, `Dispatcher`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/deliveries` | Create delivery order with tracking code | `201 Created` |
@@ -1536,7 +1740,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 | `POST` | `/api/deliveries/{id}/complete` | Mark delivery delivered | `200 OK` |
 | `POST` | `/api/deliveries/{id}/cancel` | Cancel delivery with reason | `200 OK` |
 
-### Routes (`/api/routes`)
+### Routes (`/api/routes`) — Roles: `Admin`, `FleetManager`, `Dispatcher`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/routes` | Plan route | `201 Created` |
@@ -1547,7 +1751,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 | `POST` | `/api/routes/{id}/complete` | Complete route | `200 OK` |
 | `POST` | `/api/routes/{id}/cancel` | Cancel route with reason | `200 OK` |
 
-### Maintenance (`/api/maintenances`)
+### Maintenance (`/api/maintenances`) — Roles: `Admin`, `FleetManager`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `POST` | `/api/maintenances` | Schedule vehicle maintenance | `201 Created` |
@@ -1555,7 +1759,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 | `POST` | `/api/maintenances/{id}/complete` | Complete maintenance with expenses | `200 OK` |
 | `POST` | `/api/maintenances/{id}/cancel` | Cancel maintenance order | `200 OK` |
 
-### Health & Specification
+### Health & Specification — `[AllowAnonymous]`
 | Method | Route | Purpose | Success |
 |:---:|:---|:---|:---:|
 | `GET` | `/health/live` | Liveness probe (process responsive) | `200 OK` |
@@ -1581,18 +1785,99 @@ All uncaught exceptions are transformed into RFC 9457 responses by `GlobalExcept
 
 ---
 
-## 19. Observability & Health Checks
+## 19. Authentication & Role-Based Access Control (JWT & RBAC)
+
+FleetOps secures all business operations via **JWT Bearer Authentication** (RFC 7519) signed with HMAC-SHA256 and granular **Role-Based Access Control (RBAC)**:
+
+### Role Permissions Matrix
+
+| Role | Operational Scope | Authorized Endpoints |
+|---|---|---|
+| `Admin` | Unrestricted infrastructure & operational management | Full access across all API endpoints |
+| `FleetManager` | Fleet operations, assets, and service orders | `/api/vehicles/*`, `/api/drivers/*`, `/api/maintenances/*`, `/api/deliveries/*`, `/api/routes/*` |
+| `Dispatcher` | Transit, shipment dispatch, and route planning | `/api/deliveries/*`, `/api/routes/*` |
+| `Driver` | Operator view | Read-only access to assigned routes and tasks |
+
+### Authentication & Token Issuance Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as External Client / User
+    participant Auth as POST /api/auth/token
+    participant API as Protected Endpoints (/api/vehicles...)
+
+    Client->>Auth: {"username": "manager1", "role": "FleetManager"}
+    Auth-->>Client: 200 OK {"accessToken": "eyJhbG...", "tokenType": "Bearer", "expiresIn": 28800}
+
+    Client->>API: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
+    Note over API: Validates signature, issuer, audience, expiry, and Role
+    API-->>Client: 201 Created (Authorized Request)
+
+    Client->>API: POST /api/vehicles (Missing or invalid token)
+    API-->>Client: 401 Unauthorized
+
+    Client->>API: POST /api/vehicles (With Role: Driver)
+    API-->>Client: 403 Forbidden
+```
+
+---
+
+## 20. End-to-End Distributed Tracing (OpenTelemetry & Jaeger)
+
+Understanding operational latency and causality across HTTP entry points, database transactional outbox polling, RabbitMQ queues, and asynchronous consumers is critical for production diagnostics.
+
+FleetOps implements distributed tracing adhering to the **W3C Trace Context** standard (`traceparent`), propagating trace context across the entire lifecycle:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as HTTP Client
+    participant API as FleetOps.Api (HTTP Inbound)
+    participant DB as PostgreSQL (outbox_messages)
+    participant Outbox as OutboxService (Producer)
+    participant Broker as RabbitMQ (fleetops.events)
+    participant Consumer as MaintenanceCompletedConsumer
+    participant Jaeger as Jaeger (OTLP Backend)
+
+    Client->>API: POST /api/maintenances/{id}/complete (Generates TraceID)
+    API->>DB: Commits business state + saves OutboxMessage with trace_parent
+    API->>Jaeger: Exports HTTP Span (AspNetCoreInstrumentation)
+    API-->>Client: 200 OK
+
+    Note over DB,Outbox: Asynchronous Outbox Polling
+    Outbox->>DB: Query with FOR UPDATE SKIP LOCKED
+    Outbox->>Outbox: Restores ActivityContext from message.TraceParent
+    Outbox->>Broker: BasicPublish with AMQP Header: traceparent
+    Outbox->>Jaeger: Exports Span "OutboxService.ProcessMessage" (Child Span)
+
+    Note over Broker,Consumer: Asynchronous Idempotent Consumer
+    Broker->>Consumer: Delivers message with traceparent header
+    Consumer->>Consumer: Extracts traceparent and starts linked Activity span
+    Consumer->>DB: Idempotently executes use case within transaction
+    Consumer->>Jaeger: Exports Span "MaintenanceCompletedConsumer.Process" (Child Span)
+    Consumer->>Broker: BasicAckAsync
+```
+
+### Jaeger UI Inspection
+Spans are streamed via OTLP gRPC (`port 4317`) directly to the Jaeger all-in-one container configured in `compose.yaml`:
+- **Jaeger Web UI:** `http://localhost:16686`
+- **Causal Waterfall Visualization:** Visually track exact latency across the HTTP call, outbox persistence, broker delivery delay, and consumer database execution.
+
+---
+
+## 21. Observability & Health Checks
 
 - **Liveness Probe (`/health/live`):** Zero-I/O probe confirming process availability. Returns `200 OK`.
 - **Readiness Probe (`/health/ready`):** Evaluates database connectivity using `_dbContext.Database.CanConnectAsync()`. Returns `200 OK` when healthy and `503 Service Unavailable` during database partitions.
 
 ---
 
-## 20. Project Structure
+## 22. Project Structure
 
 ```text
 fleetops/
-├── compose.yaml                      # Multi-container orchestration (API, PostgreSQL, RabbitMQ)
+├── compose.yaml                      # Multi-container orchestration (API, PostgreSQL, RabbitMQ, Jaeger)
 ├── Dockerfile                        # Multi-stage .NET 10 build (non-root $APP_UID)
 ├── .dockerignore                     # Build context exclusions
 ├── .editorconfig                     # Code analysis and formatting standards
@@ -1604,28 +1889,30 @@ fleetops/
 ├── src/
 │   ├── FleetOps.Domain/              # Pure DDD core (zero external dependencies)
 │   ├── FleetOps.Application/         # 28 command use cases, DTOs, repository interfaces
-│   ├── FleetOps.Infrastructure/      # EF Core 10, PostgreSQL, RabbitMQ Publisher & Consumer, Outbox
-│   └── FleetOps.Api/                 # Thin controllers, ProblemDetails, OpenAPI 3.1, Health Probes
+│   ├── FleetOps.Infrastructure/      # EF Core 10, PostgreSQL, RabbitMQ Publisher & Consumer, Outbox, Diagnostics
+│   └── FleetOps.Api/                 # Thin controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 unit tests (Domain, Application, Architecture)
-    └── FleetOps.IntegrationTests/    # 94 integration tests running against real PostgreSQL & RabbitMQ
+    └── FleetOps.IntegrationTests/    # 102 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API)
 ```
 
 ---
 
-## 21. Testing
+## 23. Testing
 
-FleetOps includes **260 automated tests** executing with 100% pass rate:
+FleetOps includes **268 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll:  94 Passed (0 Failed, 0 Skipped)
-  Total:                         260 Passed across all suites
+  FleetOps.IntegrationTests.dll: 102 Passed (0 Failed, 0 Skipped)
+  Total:                         268 Passed across all suites
 ```
 
 ### Key Test Categories
-- **Architecture Validation Tests:** Reflectively verifies that `Domain` and `Application` have no forbidden references (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Verifies that all controller actions and use case methods propagate `CancellationToken`.
+- **Architecture Validation Tests:** Reflectively verifies that `Domain` and `Application` have no forbidden references (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Verifies that all controller actions and use case methods propagate `CancellationToken` and return `Task`.
+- **Authentication & RBAC Tests (`AuthApiTests`):** Validates JWT generation, 401 Unauthorized for unauthenticated access, and 403 Forbidden for insufficient roles (e.g. `Driver` attempting to register vehicles).
+- **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
 - **Persistence Integration Tests:** Executed against PostgreSQL, validating migrations, partial unique indexes, and schema constraints.
 - **Optimistic Concurrency Tests:** Validates `xmin` version conflict detection under simulated concurrent updates.
 - **Mutual Exclusion Tests:** Asserts that database partial unique index `ix_maintenances_vehicle_id` rejects simultaneous maintenance orders for the same vehicle.
@@ -1641,7 +1928,7 @@ Suite Execution Summary:
 
 ---
 
-## 22. Docker Environment
+## 24. Docker Environment
 
 ```mermaid
 graph TD
@@ -1649,10 +1936,12 @@ graph TD
         API["fleetops-api (:5000 &rarr; :8080)"]
         PG["postgres (:5432 &rarr; :5432)"]
         RMQ["rabbitmq (:5672 &rarr; :5672, :15672 &rarr; :15672)"]
+        Jaeger["jaeger (:16686 &rarr; :16686, :4317 &rarr; :4317)"]
     end
     
     API -->|"depends_on: service_healthy"| PG
     API -->|"depends_on: service_healthy"| RMQ
+    API -->|"depends_on: service_started"| Jaeger
     PG --- VolPG[("Volume: fleetops-postgres-data")]
     RMQ --- VolRMQ[("Volume: fleetops-rabbitmq-data")]
 ```
@@ -1660,7 +1949,7 @@ graph TD
 ### Container Engineering Highlights
 - **Multi-Stage Build:** Separates the build stage (`dotnet/sdk:10.0`) from the runtime image (`dotnet/aspnet:10.0`), minimizing container footprint.
 - **Non-Root Execution:** Runs under `$APP_UID` for container security.
-- **Startup Ordering:** API service declares `depends_on: service_healthy` for PostgreSQL and RabbitMQ.
+- **Startup Ordering:** API service declares `depends_on: service_healthy` for PostgreSQL and RabbitMQ, and `service_started` for Jaeger.
 - **Native Healthchecks:**
   - PostgreSQL checked via `pg_isready -U fleetops_dev -d fleetops`.
   - RabbitMQ checked via `rabbitmq-diagnostics -q ping`.
@@ -1668,17 +1957,20 @@ graph TD
 
 ---
 
-## 23. Technology Stack
+## 25. Technology Stack
 
 | Component | Repository Version | Role |
 |---|---|---|
 | **Language** | C# 14 | Strongly-typed business logic and immutable `record` commands |
 | **Runtime** | .NET 10.0 | High-performance execution runtime |
 | **Web Framework** | ASP.NET Core 10.0.11 | HTTP routing, dependency injection, and middleware |
+| **Authentication & RBAC** | JwtBearer 10.0.11 | HMAC-SHA256 signing and declarative role-based authorization |
 | **Database** | PostgreSQL 18-alpine | Relational ACID storage, partial indexes, and MVCC `xmin` |
 | **ORM & Driver** | EF Core 10.0.11 / Npgsql 10.0.3 | Object-relational mapping and change tracking |
 | **Message Broker** | RabbitMQ 3-management-alpine | Event routing, topic exchange, and dead-lettering |
 | **AMQP Client** | RabbitMQ.Client 7.2.2 | Asynchronous messaging with Publisher Confirms |
+| **Distributed Tracing** | OpenTelemetry 1.15.3 | W3C trace instrumentation and OTLP exporter |
+| **Trace Visualizer** | Jaeger all-in-one | Distributed trace UI and OTLP collection server |
 | **Testing Engine** | xUnit 2.9.3 | Unit and integration test runner |
 | **Web Test Host** | Microsoft.AspNetCore.Mvc.Testing 10.0.11 | In-memory API integration testing |
 | **API Docs** | Microsoft.AspNetCore.OpenApi 10.0.11 | OpenAPI 3.1 specification generation |
@@ -1832,10 +2124,13 @@ sequenceDiagram
 ## 30. Roadmap
 
 Planned future enhancements:
-- **Authentication & Authorization:** JWT Bearer integration with OpenID Connect (OIDC / Keycloak) and RBAC.
-- **OpenTelemetry & Observability:** Distributed tracing via OTLP to Jaeger and Prometheus metrics export.
-- **CI/CD Automation:** GitHub Actions workflows for automated linting, architecture test gates, and Docker image builds.
-- **Kubernetes Manifests:** Production Helm charts with StatefulSet storage configurations.
+- [x] **Authentication & Role-Based Access Control:** Native JWT Bearer token generation and RBAC authorization policies (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
+- [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
+- [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
+- [ ] **External OIDC Integration:** Federated identity integration with Keycloak or Auth0.
+- [ ] **Prometheus Metrics & Grafana Dashboards:** Queue latency, retry rate, and processing throughput metrics.
+- [ ] **CI/CD Automation:** GitHub Actions workflows for automated linting, architecture test gates, and Docker image builds.
+- [ ] **Kubernetes Manifests:** Production Helm charts with StatefulSet storage configurations and HPA rules.
 
 ---
 
