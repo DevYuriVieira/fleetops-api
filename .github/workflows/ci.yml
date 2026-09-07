@@ -59,8 +59,13 @@ jobs:
 
       - name: Run Automated Tests
         env:
+          ConnectionStrings__DefaultConnection: "Host=127.0.0.1;Port=5432;Database=fleetops_test;Username=postgres;Password=postgres;"
+          POSTGRES_CONNECTION_STRING: "Host=127.0.0.1;Port=5432;Database=fleetops_test;Username=postgres;Password=postgres;"
           FLEETOPS_TEST_CONNECTION_STRING: "Host=127.0.0.1;Port=5432;Database=fleetops_test;Username=postgres;Password=postgres;"
           FLEETOPS_RABBITMQ_HOST: "127.0.0.1"
           FLEETOPS_RABBITMQ_PORT: "5672"
+          RabbitMQ__Host: "127.0.0.1"
+          RabbitMQ__Port: "5672"
+          Jwt__SecretKey: "FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!"
           ASPNETCORE_ENVIRONMENT: "Testing"
         run: dotnet test --no-restore --configuration Release --verbosity normal

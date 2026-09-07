@@ -19,6 +19,9 @@ public static class DependencyInjection
         var connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? configuration.GetConnectionString("Database")
             ?? configuration["POSTGRES_CONNECTION_STRING"]
+            ?? configuration["FLEETOPS_TEST_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("FLEETOPS_TEST_CONNECTION_STRING")
+            ?? Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING")
             ?? throw new InvalidOperationException("PostgreSQL connection string is not configured. Set 'ConnectionStrings:DefaultConnection' or 'POSTGRES_CONNECTION_STRING'.");
 
         services.AddDbContext<FleetOpsDbContext>((_, options) =>

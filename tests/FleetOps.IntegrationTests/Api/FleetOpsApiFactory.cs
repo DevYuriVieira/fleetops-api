@@ -25,6 +25,8 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseSetting("ConnectionStrings:DefaultConnection", ConnectionString);
+        builder.UseSetting("POSTGRES_CONNECTION_STRING", ConnectionString);
         builder.UseSetting("Jwt:SecretKey", TestJwtSecret);
         builder.UseSetting("Jwt:Issuer", TestJwtIssuer);
         builder.UseSetting("Jwt:Audience", TestJwtAudience);
