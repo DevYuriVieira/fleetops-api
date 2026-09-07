@@ -33,8 +33,8 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
     {
         _options = new RabbitMqOptions
         {
-            Host = "127.0.0.1",
-            Port = 5672,
+            Host = Environment.GetEnvironmentVariable("FLEETOPS_RABBITMQ_HOST") ?? "127.0.0.1",
+            Port = int.TryParse(Environment.GetEnvironmentVariable("FLEETOPS_RABBITMQ_PORT"), out var p) ? p : 5672,
             Username = "guest",
             Password = "guest",
             VirtualHost = "/",
