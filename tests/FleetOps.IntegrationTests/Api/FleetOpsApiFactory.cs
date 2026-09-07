@@ -19,8 +19,16 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
         Environment.GetEnvironmentVariable("FLEETOPS_TEST_CONNECTION_STRING")
         ?? "Host=127.0.0.1;Port=5433;Database=fleetops_test;Username=postgres;Password=;";
 
+    public const string TestJwtSecret = "FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!";
+    public const string TestJwtIssuer = "FleetOps.Api";
+    public const string TestJwtAudience = "FleetOps.Clients";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseSetting("Jwt:SecretKey", TestJwtSecret);
+        builder.UseSetting("Jwt:Issuer", TestJwtIssuer);
+        builder.UseSetting("Jwt:Audience", TestJwtAudience);
+
         builder.ConfigureServices(services =>
         {
             var descriptor = services.SingleOrDefault(
@@ -48,11 +56,58 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
         {
             services.AddAuthentication(options =>
             {
-                options.DefaultAuthenticateScheme = "TestScheme";
-                options.DefaultChallengeScheme = "TestScheme";
+                options.DefaultAuthenticateScheme = "DynamicAuthScheme";
+                options.DefaultChallengeScheme = "DynamicAuthScheme";
+            })
+            .AddPolicyScheme("DynamicAuthScheme", "Dynamic Test Scheme", options =>
+            {
+                options.ForwardDefaultSelector = context =>
+                {
+                    if (context.Request.Headers.ContainsKey("Authorization") ||
+                        context.Request.Headers.ContainsKey("X-Real-Jwt"))
+                    {
+                        return Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme;
+                    }
+
+                    return "TestScheme";
+                };
             })
             .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("TestScheme", _ => { });
         });
+    }
+
+    public static string CreateValidJwtToken(
+        string username = "admin-user",
+        string role = "Admin",
+        TimeSpan? lifetime = null,
+        string? secretKey = null,
+        string? issuer = null,
+        string? audience = null)
+    {
+        var key = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+            System.Text.Encoding.UTF8.GetBytes(secretKey ?? TestJwtSecret));
+        var credentials = new Microsoft.IdentityModel.Tokens.SigningCredentials(
+            key,
+            Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256);
+        var expires = DateTime.UtcNow.Add(lifetime ?? TimeSpan.FromHours(1));
+
+        var claims = new[]
+        {
+            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub, username),
+            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.UniqueName, username),
+            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Name, username),
+            new Claim(ClaimTypes.Role, role)
+        };
+
+        var tokenDescriptor = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+            issuer: issuer ?? TestJwtIssuer,
+            audience: audience ?? TestJwtAudience,
+            claims: claims,
+            expires: expires,
+            signingCredentials: credentials);
+
+        return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
     }
 
     public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
