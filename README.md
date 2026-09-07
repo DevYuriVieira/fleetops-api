@@ -10,7 +10,8 @@
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
-[![Automated Tests](https://img.shields.io/badge/Tests-280%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![CI](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml/badge.svg)](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml)
+[![Automated Tests](https://img.shields.io/badge/Tests-283%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -38,13 +39,13 @@
 | **Concorrência no Outbox** | `FOR UPDATE SKIP LOCKED` (Trabalhadores paralelos selecionam lotes distintos sem aguardar linhas bloqueadas) |
 | **Rastreamento Distribuído** | OpenTelemetry .NET + Jaeger (Propagação W3C `traceparent` de ponta a ponta: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) |
 | **Autenticação & Autorização** | JWT Bearer Tokens (HMAC-SHA256) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
-| **Semântica de Entrega** | At-least-once delivery (sem promessas irreais de exactly-once distribuído) |
-| **Idempotência de Consumo** | Desduplicação baseada em chave primária `MessageId` |
+| **Semântica de Entrega** | Bounded At-least-once delivery (com retries finitos e Dead-Letter Queue) |
+| **Idempotência de Consumo** | Efeito de negócio único dentro da fronteira transacional auditada (`MessageId` PK) |
 | **Controle de Resiliência** | Dead-Letter Exchange (DLX), Filas TTL de Retry (10s, 30s, 90s) e Dead-Letter Queue (DLQ) |
 | **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e Consumer (confirmação formal do broker) |
 | **Controle de Concorrência** | PostgreSQL Unique Constraints + Concorrência Otimista com `xmin` (`xid` system column) |
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
-| **Testes Automatizados** | 280 testes automatizados (166 testes de unidade + 114 testes de integração) |
+| **Testes Automatizados** | 283 testes automatizados (166 testes de unidade + 117 testes de integração e falhas) |
 | **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -508,7 +509,7 @@ return await strategy.ExecuteAsync(async () =>
 
 **Benefícios Arquiteturais Comprovados:**
 1. **Particionamento Dinâmico de Carga:** Se a Réplica 1 seleciona as mensagens 1 a 20, o PostgreSQL bloqueia essas linhas. Quando a Réplica 2 executa a query simultaneamente, o `SKIP LOCKED` faz com que o banco **ignore imediatamente as linhas bloqueadas sem esperar**, selecionando as mensagens 21 a 40.
-2. **Zero Lock Wait & Zero Deadlocks:** Nenhuma réplica fica enfileirada esperando liberação de lock de outra instância. A latência de consulta é instantânea.
+2. **Ausência de Espera por Lock na Seleção:** Nenhuma réplica fica enfileirada aguardando liberação de lock de linhas já selecionadas por outra instância; o banco ignora linhas travadas imediatamente, eliminando contenção de polling concorrente sob a carga testada.
 3. **Isolamento de Falha:** Se uma réplica sofrer um crash abrupto enquanto processa seu lote, a transação correspondente é abortada e o PostgreSQL libera os locks automaticamente, permitindo que a próxima réplica ativa processe as mensagens restantes.
 
 ---
@@ -847,27 +848,28 @@ fleetops/
 │   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 114 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C)
+    └── FleetOps.IntegrationTests/    # 117 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C, Resiliência e Injeção de Falhas)
 ```
 
 ---
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **280 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **283 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 114 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         280 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 117 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         283 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
 - **Testes de Arquitetura:** Verificação reflexiva estrita garantindo que `Domain` e `Application` não referenciem bibliotecas proibidas (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Garante também que todos os métodos de controllers e casos de uso aceitem `CancellationToken` e retornem `Task`.
-- **Testes de Autenticação e RBAC (`AuthApiTests`):** Validação de emissão de tokens JWT, rejeição de credenciais inválidas, resposta HTTP 401 Unauthorized para acessos sem token e HTTP 403 Forbidden para papéis insuficientes (ex: `Driver` tentando cadastrar veículos).
-- **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
+- **Testes de Autenticação e RBAC (`AuthApiTests`):** Validação de emissão de tokens JWT, rejeição de credenciais inválidas, validação criptográfica real via `JwtBearerHandler` (tokens expirados, chave incorreta, emissor/audiência inválidos, tampering de payload), resposta HTTP 401 Unauthorized para acessos sem token e HTTP 403 Forbidden para papéis insuficientes (ex: `Driver` tentando cadastrar veículos).
+- **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada em runtime via `ActivityListener` da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
 - **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
+- **Testes de Engenharia de Resiliência e Falhas (`FailureInjectionTests`):** Validação empírica de fronteiras de falha com PostgreSQL e RabbitMQ reais: (1) publicação RabbitMQ bem-sucedida com falha simulada na marcação de banco e reentrega tratada de forma idempotente pelo consumidor; (2) crash abrupto do consumidor pós-commit e pré-ACK com reentrega via broker (`Redelivered == true`) mantendo efeito de negócio estritamente único; (3) rollback de transação relacional por violação de integridade física assegurando retenção de eventos de domínio em memória e zero mensagens no Outbox.
 - **Testes de Integração de Persistência:** Executados contra instância real do PostgreSQL, validando migrations, restrições exclusivas, tipos customizados e foreign keys.
 - **Testes de Concorrência Otimista:** Verificação de conflito `xmin` com duas conexões paralelas tentando alterar o mesmo registro.
 - **Testes de Concorrência de Manutenção:** Validação de que o índice parcial `ix_maintenances_vehicle_id` rejeita transações concorrentes criando manutenções simultâneas para o mesmo veículo.
@@ -1010,7 +1012,7 @@ As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobr
 
 - **Por que Clean Architecture e DDD?** O ciclo logístico impõe regras densas (odômetro estritamente crescente, precedência cronológica, capacidade máxima de peso e bloqueio de veículo sob reparo). Separar o domínio isola as regras das volatilidades de infraestrutura.
 - **Por que Transactional Outbox em vez de publicação direta?** Publicar diretamente no RabbitMQ durante o request HTTP gera risco de perda de mensagens em falhas de rede pós-commit. O Outbox unifica estado e evento na mesma transação ACID relacional.
-- **Por que At-least-once com Consumidor Idempotente?** Nenhum protocolo de rede garante *exactly-once* ponta a ponta sem custo proibitivo de throughput. A combinação de reentrega e desduplicação por `MessageId` atinge consistência sem sobrecarga de consenso distribuído.
+- **Por que At-least-once com Consumidor Idempotente?** Nenhum protocolo de rede garante *exactly-once* ponta a ponta sem custo proibitivo de throughput. A combinação de reentrega e desduplicação por `MessageId` atinge um único efeito de negócio dentro da fronteira transacional auditada sem sobrecarga de consenso distribuído.
 - **Por que PostgreSQL `xmin`?** Evita a necessidade de criar colunas artificiais de controle em cada tabela e aproveita a arquitetura nativa MVCC do PostgreSQL para concorrência otimista.
 
 ---
@@ -1086,20 +1088,39 @@ sequenceDiagram
 
 ---
 
-## 32. Roadmap de Evoluções Futuras
+## 32. Decisões Arquiteturais Formalizadas (Architecture Decision Records — ADRs)
+
+Decisões fundamentais de arquitetura, concorrência, mensageria, resiliência e segurança foram formalizadas seguindo o padrão ADR, com análise sistemática de contexto, alternativas descartadas, trade-offs e impactos operacionais:
+
+| ADR | Título | Status | Foco e Garantia Arquitetural |
+|---|---|---|---|
+| [ADR-001](docs/adr/ADR-001-transactional-outbox.md) | Transactional Outbox Pattern for Reliable Event Publishing | Accepted | Eliminação de dual-write hazard com atomicidade ACID no PostgreSQL |
+| [ADR-002](docs/adr/ADR-002-postgresql-concurrency-control.md) | PostgreSQL Concurrency Control via SKIP LOCKED and xmin | Accepted | Coordenação de workers concorrentes sem espera de locks e controle de concorrência otimista |
+| [ADR-003](docs/adr/ADR-003-rabbitmq-client-over-masstransit.md) | Direct RabbitMQ.Client Driver Over Heavy Messaging Abstractions | Accepted | Controle de baixo nível sobre Publisher Confirms, ACK ordering e topologia nativa |
+| [ADR-004](docs/adr/ADR-004-postgresql-over-redis.md) | PostgreSQL as Sole Persistence and Coordination Engine | Accepted | Prevenção de dual-source hazard e aproveitamento de integridade referencial ACID |
+| [ADR-005](docs/adr/ADR-005-w3c-trace-context.md) | End-to-End W3C Trace Context Propagation Across Async Boundaries | Accepted | Rastreabilidade distribuída contínua HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor |
+| [ADR-006](docs/adr/ADR-006-at-least-once-delivery.md) | Bounded At-Least-Once Delivery Semantics | Accepted | Semântica explícita de entrega com limite finito de retries, DLQ e desduplicação |
+| [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Deduplicação por constraint de PK na mesma transação de negócio |
+| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast em startup sem segredo fallback e isolamento de emissor em produção |
+| [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Delimitação estrita entre rate limiting local em memória e controle distribuído no gateway |
+
+---
+
+## 33. Roadmap de Evoluções Futuras
 
 Itens previstos para iterações futuras no ciclo do produto:
 - [x] **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC nativo com suporte a múltiplos papéis (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
 - [x] **OpenTelemetry & Rastreamento Distribuído:** Exportação OTLP de spans de ponta a ponta correlacionados via W3C `traceparent` (HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) e visualização integrada no Jaeger.
 - [x] **Concorrência de Outbox Multi-Réplica:** Bloqueio defensivo de linha com `FOR UPDATE SKIP LOCKED` para alta escalabilidade horizontal sem lock contention.
+- [x] **Pipeline CI/CD:** Automação de compilação, verificação de formatação de código e suíte de testes com PostgreSQL e RabbitMQ via GitHub Actions.
+- [x] **Formalização Arquitetural e Testes de Resiliência:** 9 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas com infraestrutura real.
 - [ ] **Integração Externa OIDC:** Provedor federado de identidade com Keycloak ou Auth0.
 - [ ] **Métricas Prometheus & Dashboards Grafana:** Métricas customizadas de latência de fila, taxas de retry e contadores de mensagens processadas.
-- [ ] **Pipeline CI/CD:** Automação de linting, validação de arquitetura e execução da suíte de testes via GitHub Actions.
 - [ ] **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
 
 ---
 
-## 33. Autor
+## 34. Autor
 
 **Autor:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
@@ -1122,13 +1143,13 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Outbox Concurrency** | `FOR UPDATE SKIP LOCKED` (Parallel workers select disjoint batches without waiting on locked rows) |
 | **Distributed Tracing** | OpenTelemetry .NET + Jaeger (End-to-end W3C `traceparent` context propagation: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer) |
 | **Authentication & RBAC** | JWT Bearer Tokens (HMAC-SHA256) + Role-Based Access Control (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
-| **Delivery Semantics** | At-least-once delivery (without unrealistic exactly-once distributed claims) |
-| **Consumer Idempotency** | Message deduplication based on primary key `MessageId` |
+| **Delivery Semantics** | Bounded At-least-once delivery (with finite retries and Dead-Letter Queue) |
+| **Consumer Idempotency** | Single business effect within audited transaction boundary (`MessageId` PK) |
 | **Resilience & Fault Tolerance** | Dead-Letter Exchange (DLX), TTL-based Retry Queues (10s, 30s, 90s), and DLQ |
 | **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer (formal broker acknowledgement) |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Automated Testing** | 280 automated tests (166 unit tests + 114 integration tests) |
+| **Automated Testing** | 283 automated tests (166 unit tests + 117 integration and resilience tests) |
 | **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -1562,8 +1583,8 @@ return await strategy.ExecuteAsync(async () =>
 ```
 
 **Key Architectural Guarantees:**
-1. **Zero Contention Load Partitioning:** If Pod 1 locks rows 1–20, Pod 2 executing concurrently **immediately skips** rows 1–20 without blocking or waiting, instantaneously fetching rows 21–40.
-2. **Zero Lock Wait Time:** No replica ever blocks on another replica's lock (`lock_wait = 0ms`).
+1. **Dynamic Load Partitioning:** If Replica 1 locks rows 1–20, Replica 2 executing concurrently **immediately skips** rows 1–20 without blocking or waiting, fetching rows 21–40.
+2. **Contention-Free Polling Selection:** No replica blocks on another replica's locked rows under the tested concurrent workload (`lock_wait = 0ms`), preventing polling contention.
 3. **Crash Fault Isolation:** If a replica crashes mid-execution, PostgreSQL automatically releases the row locks on transaction abort, allowing surviving replicas to pick up the remaining messages on the next polling cycle.
 
 ---
@@ -1901,20 +1922,21 @@ fleetops/
 
 ## 23. Testing
 
-FleetOps includes **280 automated tests** executing with 100% pass rate:
+FleetOps includes **283 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 114 Passed (0 Failed, 0 Skipped)
-  Total:                         280 Passed across all suites
+  FleetOps.IntegrationTests.dll: 117 Passed (0 Failed, 0 Skipped)
+  Total:                         283 Passed across all suites
 ```
 
 ### Key Test Categories
 - **Architecture Validation Tests:** Reflectively verifies that `Domain` and `Application` have no forbidden references (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Verifies that all controller actions and use case methods propagate `CancellationToken` and return `Task`.
-- **Authentication & RBAC Tests (`AuthApiTests`):** Validates JWT generation, 401 Unauthorized for unauthenticated access, and 403 Forbidden for insufficient roles (e.g. `Driver` attempting to register vehicles).
-- **Distributed Tracing Tests (`TracingPropagationTests`):** Automated verification of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
+- **Authentication & RBAC Tests (`AuthApiTests`):** Validates real cryptographic token handling via `JwtBearerHandler` (expired tokens, wrong signing key, untrusted issuer/audience, payload tampering), 401 Unauthorized for unauthenticated access, and 403 Forbidden for insufficient roles (e.g. `Driver` attempting to register vehicles).
+- **Distributed Tracing Tests (`TracingPropagationTests`):** Automated runtime verification via `ActivityListener` of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
 - **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
+- **Resilience & Failure Injection Tests (`FailureInjectionTests`):** Empirical failure boundary validation using real PostgreSQL and RabbitMQ: (1) successful RabbitMQ publication with database update failure and idempotent consumer redelivery; (2) abrupt consumer crash post-commit and pre-ACK with broker redelivery (`Redelivered == true`) preserving a single business effect; (3) database transaction rollback on physical constraint violation ensuring in-memory domain event retention and zero committed Outbox messages.
 - **Persistence Integration Tests:** Executed against PostgreSQL, validating migrations, partial unique indexes, and schema constraints.
 - **Optimistic Concurrency Tests:** Validates `xmin` version conflict detection under simulated concurrent updates.
 - **Mutual Exclusion Tests:** Asserts that database partial unique index `ix_maintenances_vehicle_id` rejects simultaneous maintenance orders for the same vehicle.
@@ -2047,7 +2069,7 @@ dotnet test
 
 - **Why Clean Architecture & DDD?** Fleet operations require complex invariant enforcement (non-decreasing odometers, payload limits, strict state machines). Domain isolation shields business rules from external technology shifts.
 - **Why Transactional Outbox?** Publishing directly to a broker during HTTP request processing introduces dual-write hazards. Outbox ensures database state and event persistence are committed atomically.
-- **Why At-least-once with Idempotency?** Exactly-once message delivery across distributed networks is a physical impossibility without severe distributed locking penalties. At-least-once coupled with `MessageId` deduplication achieves guaranteed consistency without distributed locks.
+- **Why At-least-once with Idempotency?** Exactly-once message delivery across distributed networks is a physical impossibility without severe distributed locking penalties. Bounded at-least-once delivery coupled with `MessageId` deduplication achieves a single business effect within the audited transaction boundary without distributed locks.
 - **Why PostgreSQL `xmin`?** Leverages PostgreSQL's native MVCC tracking without adding artificial version columns to tables.
 
 ---
@@ -2123,20 +2145,39 @@ sequenceDiagram
 
 ---
 
-## 32. Roadmap
+## 32. Architecture Decision Records (ADRs)
+
+Formal Architecture Decision Records documenting engineering decisions, problem context, evaluated alternatives, trade-offs, and operational consequences:
+
+| ADR | Title | Status | Architectural Scope & Focus |
+|---|---|---|---|
+| [ADR-001](docs/adr/ADR-001-transactional-outbox.md) | Transactional Outbox Pattern for Reliable Event Publishing | Accepted | Dual-write hazard mitigation via PostgreSQL ACID transaction boundary |
+| [ADR-002](docs/adr/ADR-002-postgresql-concurrency-control.md) | PostgreSQL Concurrency Control via SKIP LOCKED and xmin | Accepted | Contention-free concurrent worker polling and optimistic row versioning |
+| [ADR-003](docs/adr/ADR-003-rabbitmq-client-over-masstransit.md) | Direct RabbitMQ.Client Driver Over Heavy Messaging Abstractions | Accepted | Low-level control over Publisher Confirms, ACK ordering, and native topology |
+| [ADR-004](docs/adr/ADR-004-postgresql-over-redis.md) | PostgreSQL as Sole Persistence and Coordination Engine | Accepted | Dual-source hazard prevention leveraging ACID relational guarantees |
+| [ADR-005](docs/adr/ADR-005-w3c-trace-context.md) | End-to-End W3C Trace Context Propagation Across Async Boundaries | Accepted | Continuous distributed tracing HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer |
+| [ADR-006](docs/adr/ADR-006-at-least-once-delivery.md) | Bounded At-Least-Once Delivery Semantics | Accepted | Explicit bounded delivery semantics with finite retries, DLQ, and deduplication |
+| [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Primary-key deduplication within the audited business transaction boundary |
+| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast startup validation with no insecure secret fallbacks |
+| [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Strict demarcation between in-memory local limits and edge/gateway distributed control |
+
+---
+
+## 33. Roadmap
 
 Planned future enhancements:
 - [x] **Authentication & Role-Based Access Control:** Native JWT Bearer token generation and RBAC authorization policies (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
 - [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
 - [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
+- [x] **CI/CD Automation:** GitHub Actions CI workflow with clean containerized PostgreSQL and RabbitMQ execution.
+- [x] **Formal Architecture & Failure Engineering:** 9 formal ADRs and real-infrastructure failure injection integration test suite.
 - [ ] **External OIDC Integration:** Federated identity integration with Keycloak or Auth0.
 - [ ] **Prometheus Metrics & Grafana Dashboards:** Queue latency, retry rate, and processing throughput metrics.
-- [ ] **CI/CD Automation:** GitHub Actions workflows for automated linting, architecture test gates, and Docker image builds.
 - [ ] **Kubernetes Manifests:** Production Helm charts with StatefulSet storage configurations and HPA rules.
 
 ---
 
-## 33. Author
+## 34. Author
 
 **Author:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
