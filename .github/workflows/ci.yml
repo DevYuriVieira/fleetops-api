@@ -40,6 +40,11 @@ jobs:
           --health-retries 5
 
     steps:
+      - name: Disable Runner Host PostgreSQL
+        run: |
+          sudo systemctl stop postgresql || true
+          sudo systemctl disable postgresql || true
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -68,4 +73,22 @@ jobs:
           RabbitMQ__Port: "5672"
           Jwt__SecretKey: "FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!"
           ASPNETCORE_ENVIRONMENT: "Testing"
-        run: dotnet test --no-restore --configuration Release --verbosity normal
+        run: dotnet test --no-restore --configuration Release --verbosity normal --logger "trx;LogFileName=test_results.trx"
+
+      - name: Annotate Test Failures
+        if: failure()
+        run: |
+          python3 -c "
+          import xml.etree.ElementTree as ET, glob
+          for f in glob.glob('**/test_results.trx', recursive=True):
+              tree = ET.parse(f)
+              for r in tree.findall('.//{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}UnitTestResult'):
+                  if r.attrib.get('outcome') == 'Failed':
+                      name = r.attrib.get('testName')
+                      msg = ''
+                      for o in r.findall('.//{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}Message'):
+                          msg += (o.text or '') + ' '
+                      for s in r.findall('.//{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}StackTrace'):
+                          msg += (s.text or '') + ' '
+                      print(f'::error title={name}::{msg.strip()[:500]}')
+          "
