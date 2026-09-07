@@ -23,21 +23,34 @@ public sealed class AuthController : ControllerBase
     };
 
     private readonly JwtOptions _jwtOptions;
+    private readonly IWebHostEnvironment _environment;
 
-    public AuthController(IOptions<JwtOptions> jwtOptions)
+    public AuthController(IOptions<JwtOptions> jwtOptions, IWebHostEnvironment environment)
     {
         _jwtOptions = jwtOptions.Value;
+        _environment = environment;
     }
 
     [HttpPost("token")]
     [AllowAnonymous]
     [ProducesResponseType(typeof(TokenResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public Task<IActionResult> GenerateToken(
         [FromBody] TokenRequest request,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (!_environment.IsDevelopment() && !_environment.IsEnvironment("Testing"))
+        {
+            return Task.FromResult<IActionResult>(NotFound(new ProblemDetails
+            {
+                Title = "Not Found",
+                Detail = "Token generation endpoint is disabled in production environments.",
+                Status = StatusCodes.Status404NotFound
+            }));
+        }
 
         if (string.IsNullOrWhiteSpace(request.Username))
         {
