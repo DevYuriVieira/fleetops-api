@@ -10,8 +10,8 @@
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
-[![Automated Tests](https://img.shields.io/badge/Tests-276%20Passing-brightgreen?logo=xunit&logoColor=white)](#21-testing)
-[![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#28-production-gate)
+[![Automated Tests](https://img.shields.io/badge/Tests-276%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
 *A distributed, event-driven fleet operations REST API built for transactional consistency, resilience, and asynchronous processing.*
@@ -847,20 +847,20 @@ fleetops/
 │   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 102 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API)
+    └── FleetOps.IntegrationTests/    # 110 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API)
 ```
 
 ---
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **268 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **276 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 102 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         268 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 110 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         276 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
@@ -933,7 +933,7 @@ graph TD
 
 ---
 
-## 24. Instruções de Execução (Getting Started)
+## 26. Instruções de Execução (Getting Started)
 
 ### Pré-requisitos
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) instalado.
@@ -985,7 +985,7 @@ dotnet test
 
 ---
 
-## 25. Configurações e Variáveis de Ambiente
+## 27. Configurações e Variáveis de Ambiente
 
 As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobreposição por variáveis de ambiente:
 
@@ -1005,7 +1005,7 @@ As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobr
 
 ---
 
-## 26. Decisões Arquiteturais Fundamentadas
+## 28. Decisões Arquiteturais Fundamentadas
 
 - **Por que Clean Architecture e DDD?** O ciclo logístico impõe regras densas (odômetro estritamente crescente, precedência cronológica, capacidade máxima de peso e bloqueio de veículo sob reparo). Separar o domínio isola as regras das volatilidades de infraestrutura.
 - **Por que Transactional Outbox em vez de publicação direta?** Publicar diretamente no RabbitMQ durante o request HTTP gera risco de perda de mensagens em falhas de rede pós-commit. O Outbox unifica estado e evento na mesma transação ACID relacional.
@@ -1014,7 +1014,7 @@ As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobr
 
 ---
 
-## 27. Escopo Deliberado: Por Que NÃO Redis / Kafka / MassTransit / MediatR
+## 29. Escopo Deliberado: Por Que NÃO Redis / Kafka / MassTransit / MediatR
 
 Uma das marcas de maturidade de engenharia de software é a busca pela simplicidade defensiva (**Corretude > Complexidade Desnecessária**):
 
@@ -1025,7 +1025,7 @@ Uma das marcas de maturidade de engenharia de software é a busca pela simplicid
 
 ---
 
-## 28. Revisão Técnica e Production Gate
+## 30. Revisão Técnica e Production Gate
 
 O projeto foi submetido a uma auditoria técnica adversarial independente cobrindo integridade transacional, tolerância a falhas distribuídas, segurança de endpoints e sanitização de dados:
 
@@ -1050,7 +1050,7 @@ Critérios rigorosamente validados:
 
 ---
 
-## 29. Modelo de Confiabilidade Ponta a Ponta
+## 31. Modelo de Confiabilidade Ponta a Ponta
 
 ```mermaid
 sequenceDiagram
@@ -1085,7 +1085,7 @@ sequenceDiagram
 
 ---
 
-## 30. Roadmap de Evoluções Futuras
+## 32. Roadmap de Evoluções Futuras
 
 Itens previstos para iterações futuras no ciclo do produto:
 - [x] **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC nativo com suporte a múltiplos papéis (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
@@ -1098,7 +1098,7 @@ Itens previstos para iterações futuras no ciclo do produto:
 
 ---
 
-## 31. Autor
+## 33. Autor
 
 **Autor:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
@@ -1893,20 +1893,20 @@ fleetops/
 │   └── FleetOps.Api/                 # Thin controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 unit tests (Domain, Application, Architecture)
-    └── FleetOps.IntegrationTests/    # 102 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API)
+    └── FleetOps.IntegrationTests/    # 110 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API)
 ```
 
 ---
 
 ## 23. Testing
 
-FleetOps includes **268 automated tests** executing with 100% pass rate:
+FleetOps includes **276 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 102 Passed (0 Failed, 0 Skipped)
-  Total:                         268 Passed across all suites
+  FleetOps.IntegrationTests.dll: 110 Passed (0 Failed, 0 Skipped)
+  Total:                         276 Passed across all suites
 ```
 
 ### Key Test Categories
@@ -1977,7 +1977,7 @@ graph TD
 
 ---
 
-## 24. Getting Started
+## 26. Getting Started
 
 ### Prerequisites
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -2026,7 +2026,7 @@ dotnet test
 
 ---
 
-## 25. Configuration
+## 27. Configuration
 
 | Variable | Default (.env) | Description |
 |---|---|---|
@@ -2041,7 +2041,7 @@ dotnet test
 
 ---
 
-## 26. Architectural Decisions
+## 28. Architectural Decisions
 
 - **Why Clean Architecture & DDD?** Fleet operations require complex invariant enforcement (non-decreasing odometers, payload limits, strict state machines). Domain isolation shields business rules from external technology shifts.
 - **Why Transactional Outbox?** Publishing directly to a broker during HTTP request processing introduces dual-write hazards. Outbox ensures database state and event persistence are committed atomically.
@@ -2050,7 +2050,7 @@ dotnet test
 
 ---
 
-## 27. Deliberate Scope: Why NOT Redis / Kafka / MassTransit / MediatR
+## 29. Deliberate Scope: Why NOT Redis / Kafka / MassTransit / MediatR
 
 FleetOps prioritizes **Correctness > Unnecessary Complexity**:
 
@@ -2061,7 +2061,7 @@ FleetOps prioritizes **Correctness > Unnecessary Complexity**:
 
 ---
 
-## 28. Production Gate
+## 30. Production Gate
 
 The codebase was audited under an independent adversarial review verifying transactional boundaries, fault tolerance, security, and exception sanitization:
 
@@ -2086,7 +2086,7 @@ Validated Production Baselines:
 
 ---
 
-## 29. End-to-End Reliability Model
+## 31. End-to-End Reliability Model
 
 ```mermaid
 sequenceDiagram
@@ -2121,7 +2121,7 @@ sequenceDiagram
 
 ---
 
-## 30. Roadmap
+## 32. Roadmap
 
 Planned future enhancements:
 - [x] **Authentication & Role-Based Access Control:** Native JWT Bearer token generation and RBAC authorization policies (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
@@ -2134,7 +2134,7 @@ Planned future enhancements:
 
 ---
 
-## 31. Author
+## 33. Author
 
 **Author:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
