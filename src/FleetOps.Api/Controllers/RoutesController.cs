@@ -3,12 +3,14 @@ namespace FleetOps.Api.Controllers;
 using FleetOps.Api.Contracts.Routes;
 using FleetOps.Application.DTOs;
 using FleetOps.Application.UseCases.Routes;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
+[Authorize(Roles = "Admin,FleetManager,Dispatcher")]
 public sealed class RoutesController : ControllerBase
 {
     private readonly CreateRouteUseCase _createRouteUseCase;

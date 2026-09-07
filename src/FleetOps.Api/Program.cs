@@ -6,6 +6,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplicationUseCases();
+builder.Services.AddJwtAuthentication(builder.Configuration);
 builder.Services.AddFleetOpsTelemetry(builder.Configuration);
 
 builder.Services.AddControllers()
@@ -25,6 +26,9 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapOpenApi();
 app.MapApiHealthChecks();

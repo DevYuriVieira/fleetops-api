@@ -3,12 +3,14 @@ namespace FleetOps.Api.Controllers;
 using FleetOps.Api.Contracts.Deliveries;
 using FleetOps.Application.DTOs;
 using FleetOps.Application.UseCases.Deliveries;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
+[Authorize(Roles = "Admin,FleetManager,Dispatcher")]
 public sealed class DeliveriesController : ControllerBase
 {
     private readonly CreateDeliveryUseCase _createDeliveryUseCase;

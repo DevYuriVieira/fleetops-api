@@ -3,12 +3,14 @@ namespace FleetOps.Api.Controllers;
 using FleetOps.Api.Contracts.Drivers;
 using FleetOps.Application.DTOs;
 using FleetOps.Application.UseCases.Drivers;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
+[Authorize(Roles = "Admin,FleetManager")]
 public sealed class DriversController : ControllerBase
 {
     private readonly RegisterDriverUseCase _registerDriverUseCase;

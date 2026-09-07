@@ -1,10 +1,16 @@
 namespace FleetOps.IntegrationTests.Api;
 
+using System.Security.Claims;
+using System.Text.Encodings.Web;
 using FleetOps.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
@@ -37,6 +43,52 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
                 });
             });
         });
+
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = "TestScheme";
+                options.DefaultChallengeScheme = "TestScheme";
+            })
+            .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("TestScheme", _ => { });
+        });
+    }
+
+    public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+    {
+        public TestAuthHandler(
+            IOptionsMonitor<AuthenticationSchemeOptions> options,
+            ILoggerFactory logger,
+            UrlEncoder encoder)
+            : base(options, logger, encoder)
+        {
+        }
+
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            if (Request.Headers.ContainsKey("X-Anonymous"))
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
+            var role = Request.Headers.TryGetValue("X-Test-Role", out var roleHeader) && !string.IsNullOrWhiteSpace(roleHeader)
+                ? roleHeader.ToString()
+                : "Admin";
+
+            var claims = new[]
+            {
+                new Claim(ClaimTypes.Name, "test-user"),
+                new Claim(ClaimTypes.NameIdentifier, "test-user"),
+                new Claim(ClaimTypes.Role, role)
+            };
+
+            var identity = new ClaimsIdentity(claims, "TestScheme");
+            var principal = new ClaimsPrincipal(identity);
+            var ticket = new AuthenticationTicket(principal, "TestScheme");
+
+            return Task.FromResult(AuthenticateResult.Success(ticket));
+        }
     }
 
     public async Task InitializeAsync()

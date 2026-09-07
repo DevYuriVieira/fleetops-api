@@ -3,12 +3,14 @@ namespace FleetOps.Api.Controllers;
 using FleetOps.Api.Contracts.Maintenance;
 using FleetOps.Application.DTOs;
 using FleetOps.Application.UseCases.Maintenance;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("api/[controller]")]
 [Produces("application/json")]
+[Authorize(Roles = "Admin,FleetManager")]
 public sealed class MaintenancesController : ControllerBase
 {
     private readonly ScheduleMaintenanceUseCase _scheduleMaintenanceUseCase;
