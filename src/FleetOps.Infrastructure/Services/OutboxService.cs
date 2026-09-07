@@ -5,6 +5,7 @@ using FleetOps.Application.Abstractions.Events;
 using FleetOps.Infrastructure.Configuration;
 using FleetOps.Infrastructure.Messaging;
 using FleetOps.Infrastructure.Persistence;
+using FleetOps.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -35,61 +36,90 @@ public sealed class OutboxService : IOutboxService
 
     public async Task<int> ProcessPendingMessagesAsync(CancellationToken cancellationToken = default)
     {
-        var messages = await _context.OutboxMessages
-            .Where(m => m.ProcessedOnUtc == null && m.Attempts < _options.MaxAttempts)
-            .OrderBy(m => m.OccurredOnUtc)
-            .Take(_options.BatchSize)
-            .ToListAsync(cancellationToken);
+        var strategy = _context.Database.CreateExecutionStrategy();
 
-        if (messages.Count == 0)
+        return await strategy.ExecuteAsync(async () =>
         {
-            return 0;
-        }
+            await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var processedCount = 0;
+            List<OutboxMessage> messages;
 
-        foreach (var message in messages)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
+            if (_context.Database.IsNpgsql())
             {
-                var domainEvent = OutboxEventRegistry.Deserialize(message.EventType, message.Payload, SerializerOptions);
-
-                if (domainEvent is null)
-                {
-                    message.RecordFailure($"Unknown or non-deserializable domain event type: '{message.EventType}'.");
-                    continue;
-                }
-
-                if (_dispatcher is not null)
-                {
-                    await _dispatcher.DispatchEventsAsync([domainEvent], cancellationToken);
-                }
-
-                if (_rabbitMqPublisher is not null)
-                {
-                    var routingKey = ResolveRoutingKey(message.EventType);
-                    await _rabbitMqPublisher.PublishAsync(
-                        message.Id,
-                        message.EventType,
-                        routingKey,
-                        message.Payload,
-                        cancellationToken);
-                }
-
-                message.MarkProcessed(DateTimeOffset.UtcNow);
-                processedCount++;
+                messages = await _context.OutboxMessages
+                    .FromSqlRaw(
+                        """
+                        SELECT * FROM outbox_messages
+                        WHERE processed_on_utc IS NULL AND attempts < {0}
+                        ORDER BY occurred_on_utc
+                        LIMIT {1}
+                        FOR UPDATE SKIP LOCKED
+                        """,
+                        _options.MaxAttempts,
+                        _options.BatchSize)
+                    .ToListAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            else
             {
-                message.RecordFailure(ex.ToString());
+                messages = await _context.OutboxMessages
+                    .Where(m => m.ProcessedOnUtc == null && m.Attempts < _options.MaxAttempts)
+                    .OrderBy(m => m.OccurredOnUtc)
+                    .Take(_options.BatchSize)
+                    .ToListAsync(cancellationToken);
             }
-        }
 
-        await _context.SaveChangesAsync(cancellationToken);
+            if (messages.Count == 0)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return 0;
+            }
 
-        return processedCount;
+            var processedCount = 0;
+
+            foreach (var message in messages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var domainEvent = OutboxEventRegistry.Deserialize(message.EventType, message.Payload, SerializerOptions);
+
+                    if (domainEvent is null)
+                    {
+                        message.RecordFailure($"Unknown or non-deserializable domain event type: '{message.EventType}'.");
+                        continue;
+                    }
+
+                    if (_dispatcher is not null)
+                    {
+                        await _dispatcher.DispatchEventsAsync([domainEvent], cancellationToken);
+                    }
+
+                    if (_rabbitMqPublisher is not null)
+                    {
+                        var routingKey = ResolveRoutingKey(message.EventType);
+                        await _rabbitMqPublisher.PublishAsync(
+                            message.Id,
+                            message.EventType,
+                            routingKey,
+                            message.Payload,
+                            cancellationToken: cancellationToken);
+                    }
+
+                    message.MarkProcessed(DateTimeOffset.UtcNow);
+                    processedCount++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    message.RecordFailure(ex.ToString());
+                }
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            return processedCount;
+        });
     }
 
     private static string ResolveRoutingKey(string eventType)
