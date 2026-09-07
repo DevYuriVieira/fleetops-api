@@ -1,6 +1,7 @@
 namespace FleetOps.Api.Extensions;
 
 using FleetOps.Infrastructure.Diagnostics;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -36,6 +37,21 @@ public static class OpenTelemetryExtensions
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
                 {
                     tracing.AddOtlpExporter(options =>
+                    {
+                        options.Endpoint = new Uri(otlpEndpoint);
+                    });
+                }
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    .AddMeter(FleetOpsMetrics.MeterName)
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+
+                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
+                    metrics.AddOtlpExporter(options =>
                     {
                         options.Endpoint = new Uri(otlpEndpoint);
                     });

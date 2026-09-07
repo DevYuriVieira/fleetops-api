@@ -94,12 +94,14 @@ public sealed class OutboxService : IOutboxService
                     ActivityKind.Producer,
                     parentContext);
 
+                var stopwatch = Stopwatch.StartNew();
                 try
                 {
                     var domainEvent = OutboxEventRegistry.Deserialize(message.EventType, message.Payload, SerializerOptions);
 
                     if (domainEvent is null)
                     {
+                        FleetOpsMetrics.OutboxPublishFailuresTotal.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType), new KeyValuePair<string, object?>("status", "deserialization_failure"));
                         message.RecordFailure($"Unknown or non-deserializable domain event type: '{message.EventType}'.");
                         continue;
                     }
@@ -121,11 +123,17 @@ public sealed class OutboxService : IOutboxService
                             cancellationToken);
                     }
 
+                    stopwatch.Stop();
+                    FleetOpsMetrics.OutboxPublishDurationMs.Record(stopwatch.Elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("event_type", message.EventType));
+                    FleetOpsMetrics.OutboxPublishedTotal.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType), new KeyValuePair<string, object?>("status", "success"));
+
                     message.MarkProcessed(DateTimeOffset.UtcNow);
                     processedCount++;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
+                    stopwatch.Stop();
+                    FleetOpsMetrics.OutboxPublishFailuresTotal.Add(1, new KeyValuePair<string, object?>("event_type", message.EventType), new KeyValuePair<string, object?>("status", "publish_failure"));
                     message.RecordFailure(ex.ToString());
                 }
             }

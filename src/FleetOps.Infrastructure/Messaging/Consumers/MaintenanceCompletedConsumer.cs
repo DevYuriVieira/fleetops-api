@@ -143,10 +143,12 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
         if (isPoison)
         {
             _logger.LogError("Permanent poison message {MessageId}: {Reason}. Routing to DLQ.", messageId, poisonReason);
+            FleetOpsMetrics.ConsumerFailuresTotal.Add(1, new KeyValuePair<string, object?>("event_type", "MaintenanceCompleted"), new KeyValuePair<string, object?>("status", "poison_message"));
             await RouteToDlqAsync(channel, ea, messageId, $"PoisonMessage: {poisonReason}", cancellationToken);
             return;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             using var scope = _scopeFactory.CreateScope();
@@ -167,6 +169,7 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
                         "Message {MessageId} already processed. Skipping duplicate execution.",
                         messageId);
 
+                    FleetOpsMetrics.ConsumerIdempotencyHitsTotal.Add(1, new KeyValuePair<string, object?>("event_type", "MaintenanceCompleted"));
                     await tx.RollbackAsync(cancellationToken);
                     return;
                 }
@@ -187,10 +190,16 @@ public sealed class MaintenanceCompletedConsumer : BackgroundService
                     domainEvent.VehicleId);
             });
 
+            stopwatch.Stop();
+            FleetOpsMetrics.ConsumerProcessingDurationMs.Record(stopwatch.Elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("event_type", "MaintenanceCompleted"));
+            FleetOpsMetrics.ConsumerProcessedTotal.Add(1, new KeyValuePair<string, object?>("event_type", "MaintenanceCompleted"), new KeyValuePair<string, object?>("status", "success"));
+
             await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            stopwatch.Stop();
+            FleetOpsMetrics.ConsumerFailuresTotal.Add(1, new KeyValuePair<string, object?>("event_type", "MaintenanceCompleted"), new KeyValuePair<string, object?>("status", "transient_failure"));
             await HandleTransientFailureAsync(channel, ea, messageId, ex, cancellationToken);
         }
     }
