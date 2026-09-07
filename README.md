@@ -10,7 +10,7 @@
 [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.x-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
-[![Automated Tests](https://img.shields.io/badge/Tests-276%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![Automated Tests](https://img.shields.io/badge/Tests-280%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -44,7 +44,7 @@
 | **Confirmação de Mensageria** | Publisher Confirms habilitado no Outbox Publisher e Consumer (confirmação formal do broker) |
 | **Controle de Concorrência** | PostgreSQL Unique Constraints + Concorrência Otimista com `xmin` (`xid` system column) |
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
-| **Testes Automatizados** | 276 testes automatizados (166 testes de unidade + 110 testes de integração) |
+| **Testes Automatizados** | 280 testes automatizados (166 testes de unidade + 114 testes de integração) |
 | **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -847,25 +847,26 @@ fleetops/
 │   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 110 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API)
+    └── FleetOps.IntegrationTests/    # 114 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C)
 ```
 
 ---
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **276 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **280 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 110 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         276 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 114 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         280 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
 - **Testes de Arquitetura:** Verificação reflexiva estrita garantindo que `Domain` e `Application` não referenciem bibliotecas proibidas (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Garante também que todos os métodos de controllers e casos de uso aceitem `CancellationToken` e retornem `Task`.
 - **Testes de Autenticação e RBAC (`AuthApiTests`):** Validação de emissão de tokens JWT, rejeição de credenciais inválidas, resposta HTTP 401 Unauthorized para acessos sem token e HTTP 403 Forbidden para papéis insuficientes (ex: `Driver` tentando cadastrar veículos).
+- **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
 - **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
 - **Testes de Integração de Persistência:** Executados contra instância real do PostgreSQL, validando migrations, restrições exclusivas, tipos customizados e foreign keys.
 - **Testes de Concorrência Otimista:** Verificação de conflito `xmin` com duas conexões paralelas tentando alterar o mesmo registro.
@@ -1127,7 +1128,7 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer (formal broker acknowledgement) |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Automated Testing** | 276 automated tests (166 unit tests + 110 integration tests) |
+| **Automated Testing** | 280 automated tests (166 unit tests + 114 integration tests) |
 | **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`) |
 
@@ -1893,25 +1894,26 @@ fleetops/
 │   └── FleetOps.Api/                 # Thin controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 unit tests (Domain, Application, Architecture)
-    └── FleetOps.IntegrationTests/    # 110 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API)
+    └── FleetOps.IntegrationTests/    # 114 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API, W3C Tracing)
 ```
 
 ---
 
 ## 23. Testing
 
-FleetOps includes **276 automated tests** executing with 100% pass rate:
+FleetOps includes **280 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 110 Passed (0 Failed, 0 Skipped)
-  Total:                         276 Passed across all suites
+  FleetOps.IntegrationTests.dll: 114 Passed (0 Failed, 0 Skipped)
+  Total:                         280 Passed across all suites
 ```
 
 ### Key Test Categories
 - **Architecture Validation Tests:** Reflectively verifies that `Domain` and `Application` have no forbidden references (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Verifies that all controller actions and use case methods propagate `CancellationToken` and return `Task`.
 - **Authentication & RBAC Tests (`AuthApiTests`):** Validates JWT generation, 401 Unauthorized for unauthenticated access, and 403 Forbidden for insufficient roles (e.g. `Driver` attempting to register vehicles).
+- **Distributed Tracing Tests (`TracingPropagationTests`):** Automated verification of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
 - **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
 - **Persistence Integration Tests:** Executed against PostgreSQL, validating migrations, partial unique indexes, and schema constraints.
 - **Optimistic Concurrency Tests:** Validates `xmin` version conflict detection under simulated concurrent updates.
