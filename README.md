@@ -2246,9 +2246,9 @@ Host Environment:
 | **Domain Stress** | 5 &rarr; 70 VUs (50s) | 9,921 reqs | **198.31 req/s** | 75.36 ms | 348.10 ms | 392.93 ms | 801.66 ms | **0.00%** | 9,920 veículos | **PASS (Saturação Observada)** |
 
 ### Conclusões de Engenharia de Capacidade:
-1. **Vazão Sustentável Máxima:** Atingida em **15 VUs** com **277.83 RPS**, P50 de **3.88 ms** e P95 de **72.16 ms**.
-2. **Knee de Degradação / Ponto de Saturação:** Observado entre **25 e 35 VUs**. Acima dessa faixa, a concorrência adicional causa contenção no pool de conexões do PostgreSQL e serialização de transações no Npgsql, elevando o P50 para **75.36 ms** e reduzindo a vazão média para **198.31 RPS**.
-3. **Resiliência sob Falha:** Testes de integração em runtime comprovaram que a indisponibilidade simultânea de RabbitMQ não impede escritas no banco (Outbox acumula e drena automaticamente após recuperação com 0 perdas).
+1. **Pico de Vazão Sustentável Observado no Workload:** Atingido em **15 VUs** com **277.83 RPS**, P50 de **3.88 ms** e P95 de **72.16 ms**. *(Nota: Representa o pico observado no perfil testado, não o teto teórico absoluto do sistema).*
+2. **Knee de Degradação / Ponto de Saturação:** Observado entre **25 e 35 VUs**. Acima dessa faixa, a concorrência adicional causa contenção no pool de conexões do Npgsql (`Duração da transação relacional ↑ → Ocupação de conexões ↑ → Fila de espera no pool Npgsql ↑ → Latência percebida ↑`), elevando o P50 para **75.36 ms** e reduzindo a vazão média observada para **198.31 RPS**.
+3. **Resiliência sob Spike e Falha:** Sob spike de 35 VUs, a latência atingiu temporariamente 1.13s; após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido. Em testes com RabbitMQ offline, nenhuma perda de eventos foi observada (Outbox acumulou e drenou automaticamente após a recuperação).
 
 Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
 - [ADR-015 — Capacity Engineering and Performance Validation](file:///c:/Users/Yuri/OneDrive/Desktop/C#/fleetops/docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)

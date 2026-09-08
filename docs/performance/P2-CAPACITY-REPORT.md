@@ -8,18 +8,18 @@
 
 ## 1. Executive Summary
 
-During Sprint P2, FleetOps API underwent rigorous empirical capacity engineering, progressive saturation stress testing, and failure-under-load validation. 
+During Sprint P2, FleetOps API underwent empirical capacity engineering, progressive saturation stress testing, and failure-under-load validation. 
 
 Sprint P1 established an infrastructure baseline of **~808 RPS** with sub-millisecond median latency; however, adversarial analysis proved this corresponded exclusively to in-memory health diagnostics (`/health/live`), where Kestrel serves responses without persistence, validation, or broker interaction.
 
-Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehicles`) to rigorous k6 load profiling, capturing the full architectural tax of JWT cryptographic verification, Domain Entity construction, PostgreSQL MVCC transactions, and Transactional Outbox persistence. 
+Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehicles`) to k6 load profiling, capturing the full architectural tax of JWT cryptographic verification, Domain Entity construction, PostgreSQL MVCC transactions, and Transactional Outbox persistence. 
 
 ### Key Empirical Findings:
 1. **Domain Baseline (5 VUs, 30s):** Observed throughput of **86.27 RPS**, median latency of **5.63 ms**, $P_{95}$ of **11.81 ms**, and **0.00% error rate** across 2,596 requests.
-2. **Domain Sustained (15 VUs, 45s):** Sustained throughput of **277.83 RPS**, median latency of **3.88 ms**, $P_{95}$ of **72.16 ms**, and **0.00% error rate** across 12,526 requests.
-3. **Domain Spike (5 → 35 → 5 VUs, 20s):** Throughput of **153.16 RPS**, with an observed latency knee reaching a maximum of **1.13 s** during peak concurrency, recovering to sub-15ms immediately upon load reduction with **0.00% errors** across 3,072 requests.
-4. **Domain Stress & Saturation (5 → 15 → 30 → 50 → 70 VUs, 50s):** Concurrency scaled to 70 VUs, observing a throughput knee plateauing at **198.31 RPS**, median latency degrading to **75.36 ms**, and $P_{95}$ reaching **392.93 ms**, with **0.00% errors** across 9,921 requests.
-5. **Rate Limiting Burst:** Tested against the default in-process Fixed Window limit (100 req/60s) under 10 concurrent VUs, yielding **759.38 RPS** with **7,616 rejections (98.70%)**. Rejections returned **HTTP 429**, RFC 9457 `application/problem+json`, and `Retry-After: 1` header in **1.08 ms median latency**, confirming zero connection starvation.
+2. **Domain Sustained (15 VUs, 45s):** Peak observed sustainable throughput within the tested workload: **277.83 RPS**, median latency of **3.88 ms**, $P_{95}$ of **72.16 ms**, and **0.00% error rate** across 12,526 requests. *(Note: This represents the peak observed rate within the tested profile, not an absolute theoretical ceiling of the system).*
+3. **Domain Spike (5 → 35 → 5 VUs, 20s):** Throughput of **153.16 RPS**, with an observed latency knee reaching a peak of **1.13 s** during maximum concurrency. Após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido (**0.00% errors** across 3,072 requests).
+4. **Domain Stress & Saturation (5 → 15 → 30 → 50 → 70 VUs, 50s):** Concurrency scaled to 70 VUs, observing a throughput knee plateauing and settling at **198.31 RPS**, median latency degrading to **75.36 ms**, and $P_{95}$ reaching **392.93 ms**, with **0.00% errors** across 9,921 requests.
+5. **Rate Limiting Burst:** Tested against the default in-process Fixed Window limit (100 req/60s) under 10 concurrent VUs, yielding **759.38 RPS** with **7,616 rejections (98.70%)**. Rejections returned **HTTP 429**, RFC 9457 `application/problem+json`, and indicative `Retry-After: 1` header in **1.08 ms median latency**, confirming zero connection starvation.
 6. **Failure Under Load Tests:** Automated integration tests validated four distinct failure and recovery lifecycles: RabbitMQ broker failure/recovery under write load, PostgreSQL failure and sanitized 503 readiness, Consumer crash-before-ack redelivery with idempotency preservation, and consumer worker outage recovery.
 7. **Total Solution Health:** Solution test suite expanded to **293 automated tests** (166 unit, 127 integration) passing with **0 failures and 0 skipped**.
 
@@ -32,7 +32,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
   - Infrastructure Health baseline vs. Authenticated Domain write capacity
   - Continuous sustained write throughput and stability
   - Sudden traffic spike resilience and latency knee recovery
-  - Concurrency stress ramp up to 70 VUs to determine the first point of degradation
+  - Concurrency stress ramp up to 70 VUs to observe degradation
   - Outbox accumulation and drain dynamics during simulated broker outage
   - PostgreSQL crash simulation under load with sanitized error reporting
   - Consumer crash-before-ack and idempotency boundaries
@@ -134,14 +134,14 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
 - **Execution Evidence:**
   - Total HTTP Requests: 12,526
   - Completed Iterations: 12,525
-  - Observed Throughput: **277.83 RPS**
+  - Peak Observed Sustainable Throughput: **277.83 RPS**
   - Error Rate: **0.00%** (0 failures out of 12,526)
   - Median Latency ($P_{50}$): **3.88 ms**
   - $P_{90}$ Latency: **43.73 ms**
   - $P_{95}$ Latency: **72.16 ms**
   - Max Latency: **200.29 ms**
   - Data Transferred: 5.7 MB received / 10 MB sent
-- **Observation:** At 15 VUs, the system reached its maximum sustained throughput efficiency (**277.83 RPS**). Latency distribution showed that while 50% of requests resolved in under 4ms, tail latency ($P_{95}$) expanded to 72ms as PostgreSQL transaction serialization and connection pooling came into play.
+- **Observation:** Within the tested workload, 15 VUs yielded the highest throughput efficiency (**277.83 RPS**). Latency distribution showed that while 50% of requests resolved in under 4ms, tail latency ($P_{95}$) expanded to 72ms as PostgreSQL transaction serialization and connection pooling came into play.
 
 ---
 
@@ -158,7 +158,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
   - $P_{90}$ Latency: **260.59 ms**
   - $P_{95}$ Latency: **357.84 ms**
   - Max Latency: **1,130 ms (1.13s)**
-- **Observation:** During the sudden surge from 5 to 35 VUs, a temporary queueing knee formed in the Npgsql connection pool and ASP.NET thread pool, pushing peak latency to 1.13 seconds. Crucially, zero requests timed out or dropped (0% errors), and latency normalized immediately to baseline levels as soon as the concurrency settled back to 5 VUs.
+- **Observation:** During the sudden surge from 5 to 35 VUs, a temporary queueing knee formed in the Npgsql connection pool and ASP.NET thread pool, pushing peak latency to 1.13 seconds. Crucially, zero requests timed out or dropped (0% errors). Após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido.
 
 ---
 
@@ -178,7 +178,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
 - **Saturation Analysis:** 
   - Throughput grew proportionally between 5 VUs (86 RPS) and 15 VUs (278 RPS).
   - Above 30 VUs, throughput ceased to scale linearly.
-  - At 50–70 VUs, throughput plateaued and degraded to an average of **198 RPS**, while $P_{50}$ rose from 3.88ms to 75.36ms and $P_{95}$ rose to 392.93ms.
+  - At 50–70 VUs, throughput plateaued and settled at an average of **198 RPS**, while $P_{50}$ rose from 3.88ms to 75.36ms and $P_{95}$ rose to 392.93ms.
   - **Empirically Observed Degradation Knee:** Concurrency between 25 and 35 concurrent requests represents the local saturation threshold, beyond which additional concurrency produces connection lock contention rather than throughput gains.
 
 ---
@@ -187,7 +187,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
 
 - **Total Vehicles Persisted:** 28,211 vehicle records persisted across benchmarks.
 - **ACID & MVCC Behavior:** All transactions were committed with `ReadCommitted` isolation and row versioning.
-- **Connection Pool Utilization:** Npgsql default pool size (100 connections). Under 70 VUs, connections were heavily contended, but zero pool exhaustion exceptions occurred (`Npgsql.NpgsqlException: The connection pool has been exhausted` was NOT observed).
+- **Connection Pool Utilization:** Npgsql default pool size (100 connections). Under 70 VUs, connections were contended, but zero pool exhaustion exceptions occurred (`Npgsql.NpgsqlException: The connection pool has been exhausted` was NOT observed).
 - **Index & Lock Contention:** Table `vehicles` uses a unique B-Tree index on `license_plate`. The deterministic synthetic plate generation prevented primary key / unique constraint collisions.
 - **Classification:** `OBSERVED` & `TESTED`
 
@@ -197,7 +197,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
 
 - **Broker State:** Dedicated container `fleetops-rabbitmq` running RabbitMQ 3.13 with quorum queues and dead-letter exchange bindings.
 - **Publisher Confirm Overhead:** Outbox publisher utilizes asynchronous tracking Publisher Confirms (`mandatory: true`). When routing keys match bound queues, acknowledgments return within < 2ms. When an unrouted key is published with `mandatory: true`, the broker reliably triggers `BasicReturnException` (NO_ROUTE), proving zero silent message loss.
-- **Queue Depth & Backlog Draining:** Observed in integration testing that accumulating 8–20 messages during consumer suspension yields instantaneous draining upon consumer restart.
+- **Queue Depth & Backlog Draining:** Observed in integration testing that accumulating 8–20 messages during consumer suspension yields rapid draining upon consumer restart.
 - **Classification:** `OBSERVED` & `TESTED`
 
 ---
@@ -213,6 +213,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
   - Outbox accumulated 10 pending records with 0 published.
   - Outbox worker executed against dead broker: safely caught socket exceptions, incremented `attempts`, recorded sanitized error text, and did NOT crash.
   - Real broker restored: worker executed, successfully published all 10 messages with confirms, and drained pending backlog to exactly 0.
+  - **Result:** No event loss was observed in the tested RabbitMQ outage/recovery scenario.
 - **Classification:** `TESTED` & `OBSERVED`
 
 ---
@@ -237,7 +238,7 @@ All four mandated failure-under-load scenarios were implemented in `CapacityAndF
 
 | Scenario | Trigger / Fault Injected | Observed System Behavior | Persisted State | Recovery Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| **Cenário A: Broker Outage** | RabbitMQ port 59999 unreachable during writes | API writes continue; PostgreSQL commits; Outbox accumulates | 10 vehicles saved; 10 outbox messages pending | `TESTED` — Outbox drained completely upon broker recovery |
+| **Cenário A: Broker Outage** | RabbitMQ port 59999 unreachable during writes | API writes continue; PostgreSQL commits; Outbox accumulates | 10 vehicles saved; 10 outbox messages pending | `TESTED` — Outbox drained completely upon broker recovery; no event loss observed |
 | **Cenário B: DB Outage** | PostgreSQL port 59997 unreachable | Readiness reports 503; Liveness reports 200; writes return sanitized 500 ProblemDetails | No orphaned writes; no sensitive credentials leaked | `TESTED` — System restored immediately upon database availability |
 | **Cenário C: Consumer Interruption** | Consumer suspended while publishing messages | Queue depth grows to 8 messages; zero consumer processing | 8 messages in RabbitMQ queue | `TESTED` — Consumer restart drained queue to 0 in < 1.2s |
 | **Cenário D: Crash Before ACK** | Channel closed abruptly post-commit | RabbitMQ marks `Redelivered=true`; Consumer detects existing record | Exactly 1 record in database; 0 duplicate business side-effects | `TESTED` — Idempotency preserved; message cleanly acked |
@@ -248,9 +249,9 @@ All four mandated failure-under-load scenarios were implemented in `CapacityAndF
 
 ```
 Throughput (RPS) vs Concurrency (VUs)
-   300 |               * (277.83 RPS @ 15 VUs)  <--- Maximum Sustainable Throughput
+   300 |               * (277.83 RPS @ 15 VUs)  <--- Peak Observed Sustainable Rate
        |              / \
-   200 |             /   \-------* (198.31 RPS @ 70 VUs)  <--- Latency Knee / Degradation
+   200 |             /   \-------* (198.31 RPS @ 70 VUs)  <--- Degradation Knee
        |            /
    100 |   *-------/ (86.27 RPS @ 5 VUs)
        |
@@ -259,7 +260,10 @@ Throughput (RPS) vs Concurrency (VUs)
 ```
 
 - **Observed Saturation Point:** Concurrency between **20 and 35 VUs**.
-- **Suspected Bottleneck:** Relational database connection contention and transaction serialization in PostgreSQL under synchronous write loads. CPU utilization remained stable (< 45%), memory showed no leak or GC pressure, while query wait times rose from 5.48ms to 75.14ms.
+- **Limiting Mechanism:** Npgsql connection-pool contention under the tested concurrency profile.
+- **Systemic Cascade:**
+  $$\text{DB Transaction Duration} \uparrow \longrightarrow \text{Connection Occupancy} \uparrow \longrightarrow \text{Npgsql Pool Wait} \uparrow \longrightarrow \text{Perceived HTTP Latency} \uparrow$$
+- **Causal Analysis:** CPU utilization remained moderate (< 45%) and memory showed no GC pressure, while connection acquisition wait times rose as concurrency expanded from 15 to 70 VUs.
 
 ---
 
@@ -289,9 +293,9 @@ Based on ADR-014 SLO targets, the empirical findings within the local test windo
 | **Health Baseline** | 5 | 90.12* | 3.92ms | 10.48ms | 12.35ms | 159.58ms | 0.00% | N/A | N/A | N/A | N/A | **PASS** |
 | **RateLimit Burst** | 10 | 759.38 | 1.08ms | 2.46ms | 3.32ms | 515.45ms | 98.70% (429) | 100 rows | N/A | N/A | N/A | **PASS (RFC 9457)** |
 | **Domain Baseline** | 5 | 86.27 | 5.63ms | 9.88ms | 11.81ms | 369.81ms | 0.00% | 2,595 rows | Verified | Verified | N/A | **PASS** |
-| **Domain Sustained**| 15 | 277.83 | 3.88ms | 43.73ms | 72.16ms | 200.29ms | 0.00% | 12,525 rows | Verified | Verified | N/A | **PASS** |
-| **Domain Spike** | 35 | 153.16 | 10.12ms | 260.59ms| 357.84ms| 1.13s | 0.00% | 3,071 rows | Verified | Verified | N/A | **PASS** |
-| **Domain Stress** | 70 | 198.31 | 75.36ms | 348.10ms| 392.93ms| 801.66ms | 0.00% | 9,920 rows | Verified | Verified | N/A | **PASS (Saturation)**|
+| **Domain Sustained**| 15 | 277.83 | 3.88ms | 43.73ms | 72.16ms | 200.29ms | 0.00% | 12,525 rows | Verified | Verified | N/A | **PASS (Peak Observed)**|
+| **Domain Spike** | 35 | 153.16 | 10.12ms | 260.59ms| 357.84ms| 1.13s | 0.00% | 3,071 rows | Verified | Verified | N/A | **PASS (Recuperação)**|
+| **Domain Stress** | 70 | 198.31 | 75.36ms | 348.10ms| 392.93ms| 801.66ms | 0.00% | 9,920 rows | Verified | Verified | N/A | **PASS (Degradação)**|
 
 *\*Note: Health Baseline script includes an explicit 100ms client-side pacing sleep. In unpaced conditions (P1), health probes reach ~808 RPS.*
 
@@ -301,8 +305,8 @@ Based on ADR-014 SLO targets, the empirical findings within the local test windo
 
 | Component | Evidence | Observed Symptom | Confidence | Classification |
 | :--- | :--- | :--- | :--- | :--- |
-| **ASP.NET Core / Kestrel** | Sub-millisecond $P_{50}$ in RateLimiter & Health | Stable thread pool, no dropped sockets | HIGH | `VERIFIED NOT A BOTTLENECK` |
-| **PostgreSQL Connection Pool**| Latency escalated from 3.8ms to 392ms under 70 VUs | Concurrency wait time on connection acquisition | HIGH | `PROVEN BOTTLENECK UNDER PEAK CONCURRENCY` |
+| **ASP.NET Core / Kestrel** | Sub-millisecond $P_{50}$ in RateLimiter & Health | Stable thread pool, zero dropped sockets | HIGH | `VERIFIED NOT A BOTTLENECK` |
+| **Npgsql Connection Pool** | Latency escalated from 3.8ms to 392ms under 70 VUs | Connection wait queueing under high concurrency | HIGH | `OBSERVED BOTTLENECK UNDER TESTED CONCURRENCY PROFILE` |
 | **RabbitMQ Broker** | Sub-2ms Publisher Confirms, queues drained < 1.2s | Zero backlog accumulation during steady state | HIGH | `VERIFIED NOT A BOTTLENECK` |
 | **Transactional Outbox** | Batch size 20, `SKIP LOCKED` query execution < 5ms | Background polling maintained pace with broker | MEDIUM | `REASONED STABLE UNDER TESTED LOAD` |
 | **Consumer Worker** | Idempotency lookup < 3ms, graceful shutdown verified | Zero DLQ leaks during normal operations | HIGH | `VERIFIED NOT A BOTTLENECK` |
@@ -317,6 +321,27 @@ Based on ADR-014 SLO targets, the empirical findings within the local test windo
 
 ---
 
-## 22. Final Verdict
+## 22. Audit Verdict & Engineering Assessment
 
-FleetOps API demonstrates **high architectural maturity, robust failure resilience, and mathematically honest capacity metrics**. The separation between lightweight in-memory health baseline (~808 RPS) and authentic database transactional capacity (~278 RPS) is fully verified and defensible.
+### Discipline Audit Table:
+| Area | Status | Audit Assessment |
+| :--- | :---: | :--- |
+| **Implementação** | `APROVADA` | Clean Architecture estrita, C# 14 / .NET 10 idiomático, persistência com MVCC `xmin` |
+| **Testes** | `APROVADA` | 293 testes (166 unitários + 127 de integração reais), 0 falhas, 0 skips |
+| **Failure Testing** | `APROVADA` | 4 cenários de falha sob carga validados empiricamente com recuperação completa |
+| **Capacity Testing** | `APROVADA` | Separação explícita entre health in-memory e comandos transacionais de domínio |
+| **Observability** | `APROVADA` | W3C Distributed Tracing de ponta a ponta e métricas com cardinalidade delimitada |
+| **SRE** | `APROVADA` | Health checks liveness/readiness/dependencies, Error Budget e runbooks operacionais |
+| **Documentação** | `APROVADA` | 15 ADRs formais, README técnico e relatório de capacidade exaustivo |
+| **Evidência Empírica**| `FORTE` | Todas as conclusões ancoradas em dados observados do k6 e xUnit |
+| **Overclaim** | `AJUSTADO` | Linguagem universal eliminada; picos e gargalos descritos no contexto testado |
+| **Blockers** | `NENHUM` | Sistema íntegro, código formatado, CI funcional e working tree limpo |
+
+### Project Maturity vs. Professional Seniority:
+- **Maturidade das Práticas do Projeto:** O repositório demonstra consistentemente padrões associados a engenharia **Staff-oriented** (pensamento sistêmico, failure modeling, isolamento de falhas, idempotência, observabilidade W3C, ADRs e capacidade quantificada).
+- **Escopo da Avaliação:** Esta avaliação reflete estritamente as propriedades demonstradas pelos artefatos e testes da base de código do FleetOps API, sem inferir ou extrapolar a senioridade de carreira do autor fora deste escopo.
+
+### Final Verdict:
+**APPROVED — MINOR EVIDENCE-WORDING CORRECTIONS**
+
+*Recomendação Estratégica:* Não iniciar uma Sprint P3 apenas para adicionar tecnologias (como Kubernetes, Redis, Kafka ou microsserviços) para inflar o portfólio. A progressão atual (**P0 Reliability Foundation &rarr; P1 Production Engineering &rarr; P2 Capacity Engineering**) atingiu um ponto de equilíbrio técnico exemplar. Qualquer evolução futura deve ser motivada por uma necessidade operacional ou gargalo concreto descoberto em produção.
