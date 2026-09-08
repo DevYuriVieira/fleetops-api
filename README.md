@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![CI](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml/badge.svg)](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml)
-[![Automated Tests](https://img.shields.io/badge/Tests-289%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![Automated Tests](https://img.shields.io/badge/Tests-295%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  

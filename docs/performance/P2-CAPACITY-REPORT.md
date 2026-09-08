@@ -21,7 +21,7 @@ Sprint P2 subjected the genuine transactional domain write path (`POST /api/vehi
 4. **Domain Stress & Saturation (5 → 15 → 30 → 50 → 70 VUs, 50s):** Concurrency scaled to 70 VUs, observing a throughput knee plateauing and settling at **198.31 RPS**, median latency degrading to **75.36 ms**, and $P_{95}$ reaching **392.93 ms**, with **0.00% errors** across 9,921 requests.
 5. **Rate Limiting Burst:** Tested against the default in-process Fixed Window limit (100 req/60s) under 10 concurrent VUs, yielding **759.38 RPS** with **7,616 rejections (98.70%)**. Rejections returned **HTTP 429**, RFC 9457 `application/problem+json`, and indicative `Retry-After: 1` header in **1.08 ms median latency**, confirming zero connection starvation.
 6. **Failure Under Load Tests:** Automated integration tests validated four distinct failure and recovery lifecycles: RabbitMQ broker failure/recovery under write load, PostgreSQL failure and sanitized 503 readiness, Consumer crash-before-ack redelivery with idempotency preservation, and consumer worker outage recovery.
-7. **Total Solution Health:** Solution test suite expanded to **293 automated tests** (166 unit, 127 integration) passing with **0 failures and 0 skipped**.
+7. **Total Solution Health:** Solution test suite expanded to **295 automated tests** (166 unit, 129 integration) passing with **0 failures and 0 skipped**.
 
 ---
 
@@ -327,7 +327,7 @@ Based on ADR-014 SLO targets, the empirical findings within the local test windo
 | Area | Status | Audit Assessment |
 | :--- | :---: | :--- |
 | **Implementação** | `APROVADA` | Clean Architecture estrita, C# 14 / .NET 10 idiomático, persistência com MVCC `xmin` |
-| **Testes** | `APROVADA` | 293 testes (166 unitários + 127 de integração reais), 0 falhas, 0 skips |
+| **Testes** | `APROVADA` | 295 testes (166 unitários + 129 de integração reais), 0 falhas, 0 skips |
 | **Failure Testing** | `APROVADA` | 4 cenários de falha sob carga validados empiricamente com recuperação completa |
 | **Capacity Testing** | `APROVADA` | Separação explícita entre health in-memory e comandos transacionais de domínio |
 | **Observability** | `APROVADA` | W3C Distributed Tracing de ponta a ponta e métricas com cardinalidade delimitada |
