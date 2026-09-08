@@ -2251,8 +2251,8 @@ Host Environment:
 3. **Resiliência sob Spike e Falha:** Sob spike de 35 VUs, a latência atingiu temporariamente 1.13s; após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido. Em testes com RabbitMQ offline, nenhuma perda de eventos foi observada (Outbox acumulou e drenou automaticamente após a recuperação).
 
 Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
-- [ADR-015 — Capacity Engineering and Performance Validation](file:///c:/Users/Yuri/OneDrive/Desktop/C#/fleetops/docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
-- [P2 Capacity & Operational Proof Report](file:///c:/Users/Yuri/OneDrive/Desktop/C#/fleetops/docs/performance/P2-CAPACITY-REPORT.md)
+- [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
+- [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
 
 ```bash
 # Execução seletiva de suites de teste de carga:
