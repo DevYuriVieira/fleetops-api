@@ -19,13 +19,18 @@ public sealed class RabbitMqOptions
 
     public string GetRetryQueueName(int attemptIndex)
     {
-        var suffix = attemptIndex switch
+        string suffix;
+        if (attemptIndex < RetryDelaysMilliseconds.Length)
         {
-            0 => "10s",
-            1 => "30s",
-            2 => "90s",
-            _ => $"attempt-{attemptIndex + 1}"
-        };
+            var delayMs = RetryDelaysMilliseconds[attemptIndex];
+            suffix = delayMs >= 1000 && delayMs % 1000 == 0
+                ? $"{delayMs / 1000}s"
+                : $"{delayMs}ms";
+        }
+        else
+        {
+            suffix = $"attempt-{attemptIndex + 1}";
+        }
 
         return $"{MaintenanceQueueName}.retry.{suffix}";
     }

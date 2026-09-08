@@ -37,6 +37,11 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
 
         builder.ConfigureServices(services =>
         {
+            services.Configure<FleetOps.Infrastructure.Configuration.RabbitMqOptions>(options =>
+            {
+                options.RetryDelaysMilliseconds = [150, 300, 450];
+            });
+
             var descriptor = services.SingleOrDefault(
                 d => d.ServiceType == typeof(DbContextOptions<FleetOpsDbContext>));
 
