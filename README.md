@@ -47,7 +47,7 @@
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
 | **Proteção de Runtime** | Rate Limiting em memória por instância (Fixed Window: 100 req/60s, QueueLimit 0) com RFC 9457 (HTTP 429) e `Retry-After` |
 | **Métricas & Observabilidade** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) com disciplina de cardinalidade |
-| **Testes Automatizados** | 289 testes automatizados (166 testes de unidade + 123 testes de integração e falhas) |
+| **Testes Automatizados** | 295 testes automatizados (166 testes de unidade + 129 testes de integração e falhas) |
 | **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependências (`/health/dependencies`) |
 
@@ -857,13 +857,13 @@ fleetops/
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **289 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **295 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 123 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         289 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 129 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         295 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
@@ -872,9 +872,11 @@ Resultados da Execução:
 - **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada em runtime via `ActivityListener` da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
 - **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
 - **Testes de Engenharia de Resiliência e Falhas (`FailureInjectionTests`):** Validação empírica de fronteiras de falha com PostgreSQL e RabbitMQ reais: (1) publicação RabbitMQ bem-sucedida com falha simulada na marcação de banco e reentrega tratada de forma idempotente pelo consumidor; (2) crash abrupto do consumidor pós-commit e pré-ACK com reentrega via broker (`Redelivered == true`) mantendo efeito de negócio estritamente único; (3) rollback de transação relacional por violação de integridade física assegurando retenção de eventos de domínio em memória e zero mensagens no Outbox.
+- **Testes de Capacidade e Falha Sob Carga (`CapacityAndFailureUnderLoadTests`):** Validação empírica de 4 cenários sob carga concorrente: (1) broker RabbitMQ indisponível durante escritas com acúmulo no Outbox e drenagem com zero perda de eventos após reconexão; (2) queda do PostgreSQL com liveness 200, readiness 503 e resposta HTTP 500 ProblemDetails sanitizada; (3) suspensão de worker consumidor sob tráfego com crescimento de fila e recuperação limpa; (4) crash de canal pós-commit e pré-ACK com reentrega via broker preservando idempotência estrita (exatamente 1 registro persistido).
 - **Testes de Rate Limiting (`RateLimitingTests`):** Validação da barreira local por instância Fixed Window (100 req/60s, QueueLimit 0), rejeição de requisições excedentes com HTTP 429 Too Many Requests, inclusão do cabeçalho `Retry-After` e payload padronizado RFC 9457 `ProblemDetails`.
 - **Testes de Métricas Operacionais (`MetricsVerificationTests`):** Validação em tempo de execução via `System.Diagnostics.Metrics.MeterListener` da emissão de instrumentos do medidor `FleetOps` (`fleetops.outbox.messages.published`, `fleetops.consumer.messages.processed` e histogramas de latência) com aderência estrita à disciplina de cardinalidade.
 - **Testes de Degradação Graciosa (`GracefulDegradationTests`):** Validação com broker RabbitMQ desativado/parado demonstrando desacoplamento transacional: `/health/ready` responde 200 OK (PostgreSQL saudável), `/health/dependencies` reporta `Degraded` com detalhe por componente, endpoints de escrita persistem transações no PostgreSQL e acumulam mensagens com segurança no Outbox.
+- **Testes de Topologia e Configuração RabbitMQ (`RabbitMqOptionsTests`):** Validação de nomenclatura dinâmica de filas de retry (`150ms` vs `10s`), garantindo conformidade de argumentos de TTL (`x-message-ttl`) e prevenindo rejeições AMQP 406.
 - **Testes de Integração de Persistência:** Executados contra instância real do PostgreSQL, validando migrations, restrições exclusivas, tipos customizados e foreign keys.
 - **Testes de Concorrência Otimista:** Verificação de conflito `xmin` com duas conexões paralelas tentando alterar o mesmo registro.
 - **Testes de Concorrência de Manutenção:** Validação de que o índice parcial `ix_maintenances_vehicle_id` rejeita transações concorrentes criando manutenções simultâneas para o mesmo veículo.
@@ -883,7 +885,7 @@ Resultados da Execução:
   - Publicação com Publisher Confirms.
   - Consumo com gravação idempotente de `MaintenanceCompletionRecord`.
   - Descarte seguro e envio para DLQ de mensagens corrompidas (Poison Messages).
-  - Escalonamento de retry através das filas com TTL (10s, 30s, 90s).
+  - Escalonamento de retry através das filas com TTL.
   - Reentrega de mensagens após crash pós-commit sem duplicação de dados.
   - Shutdown limpo com encerramento ordeiro de canais AMQP.
 - **Testes de Infraestrutura Docker:** Validação estática das diretivas de build do `Dockerfile` e do arquivo `compose.yaml`.
@@ -1108,24 +1110,43 @@ Decisões fundamentais de arquitetura, concorrência, mensageria, resiliência e
 | [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Deduplicação por constraint de PK na mesma transação de negócio |
 | [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast em startup sem segredo fallback e isolamento de emissor em produção |
 | [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Delimitação estrita entre rate limiting local em memória e controle distribuído no gateway |
+| [ADR-010](docs/adr/ADR-010-in-process-rate-limiting.md) | In-Process Fixed Window Rate Limiting with Boundary Demarcation | Accepted | Defesa de recursos no nó com resposta RFC 9457 HTTP 429 e cabeçalho Retry-After |
+| [ADR-011](docs/adr/ADR-011-health-checks-and-dependency-readiness.md) | Health Check Probing Semantics: Live, Ready, and Degraded Dependencies | Accepted | Sondas desacopladas de liveness, readiness e diagnóstico multi-dependência com estado Degraded |
+| [ADR-012](docs/adr/ADR-012-operational-metrics-and-telemetry.md) | Operational Metrics and Telemetry Cardinality Discipline | Accepted | Instrumentação com System.Diagnostics.Metrics e cardinalidade delimitada para Outbox e Consumer |
+| [ADR-013](docs/adr/ADR-013-load-testing-and-performance-baseline.md) | Empirical Performance Baseline via k6 | Accepted | Baseline reprodutível com k6 em perfis de carga nominal, sustentada e spike |
+| [ADR-014](docs/adr/ADR-014-sli-slo-and-error-budget-framework.md) | Service Level Objectives (SLOs) and Error Budget Framework | Accepted | Framework formal de SLIs/SLOs de latência, disponibilidade e cálculo de Error Budget |
+| [ADR-015](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md) | Capacity Engineering, Domain-Level Workloads, and Performance Boundary Validation | Accepted | Delimitação estrita entre vazão in-memory e capacidade transacional ACID de domínio |
 
 ---
 
-## 33. Roadmap de Evoluções Futuras
+## 33. Cadernos Operacionais de Remediação (Runbooks)
+
+Procedimentos Operacionais Padrão (SOP) e runbooks de remediação de incidentes para engenheiros de sobreaviso (on-call):
+
+| Runbook | Cenário e Gatilho Primário | Detecção e Alerta | Ação de Mitigação |
+|---|---|---|---|
+| [Queda do PostgreSQL](docs/runbooks/postgresql-unavailable.md) | Banco PostgreSQL offline, conexão recusada ou pool esgotado | Readiness `/health/ready` responde 503; aumento de erros | Verificar storage/WAL, validar pool de conexões, acionar failover para réplica |
+| [Queda do RabbitMQ](docs/runbooks/rabbitmq-unavailable.md) | Broker de mensageria offline ou socket recusado | `/health/dependencies` reporta Degraded; acúmulo no Outbox | O sistema preserva escritas via Outbox; reiniciar broker; drenagem automática na recuperação |
+| [Acúmulo de Backlog no Outbox](docs/runbooks/outbox-backlog.md) | Mensagens pendentes não processadas excedem limite (`> 500`) | Métrica `fleetops.outbox.backlog.count`; falhas de publicação | Inspecionar rede com broker, ajustar tamanho do lote do worker ou escalonar réplicas horizontais |
+| [Reentregas do Consumidor e DLQ](docs/runbooks/consumer-redelivery-and-dlq.md) | Mensagens acumulando na Dead-Letter Queue (`fleetops.events.dlq`) | Métrica `fleetops.consumer.messages.failed`; profundidade da DLQ `> 0` | Inspecionar payload corrompido (poison message), validar schema a jusante, reprocessar ou purgar |
+
+---
+
+## 34. Roadmap de Evoluções Futuras
 
 Itens previstos para iterações futuras no ciclo do produto:
 - [x] **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC nativo com suporte a múltiplos papéis (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
 - [x] **OpenTelemetry & Rastreamento Distribuído:** Exportação OTLP de spans de ponta a ponta correlacionados via W3C `traceparent` (HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) e visualização integrada no Jaeger.
 - [x] **Concorrência de Outbox Multi-Réplica:** Bloqueio defensivo de linha com `FOR UPDATE SKIP LOCKED` para alta escalabilidade horizontal sem lock contention.
 - [x] **Pipeline CI/CD:** Automação de compilação, verificação de formatação de código e suíte de testes com PostgreSQL e RabbitMQ via GitHub Actions.
-- [x] **Formalização Arquitetural e Testes de Resiliência:** 9 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas com infraestrutura real.
+- [x] **Formalização Arquitetural, Resiliência e Engenharia de Capacidade:** 15 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas e capacidade sob carga com infraestrutura real (295 testes).
 - [ ] **Integração Externa OIDC:** Provedor federado de identidade com Keycloak ou Auth0.
 - [ ] **Métricas Prometheus & Dashboards Grafana:** Métricas customizadas de latência de fila, taxas de retry e contadores de mensagens processadas.
 - [ ] **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
 
 ---
 
-## 34. Autor
+## 35. Autor
 
 **Autor:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
@@ -1156,7 +1177,7 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
 | **Runtime Defense** | In-Process Per-Instance Rate Limiting (Fixed Window: 100 req/60s, QueueLimit 0) with RFC 9457 (HTTP 429) & `Retry-After` |
 | **Metrics & Observability** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) with bounded cardinality |
-| **Automated Testing** | 289 automated tests (166 unit tests + 123 integration and resilience tests) |
+| **Automated Testing** | 295 automated tests (166 unit tests + 129 integration and resilience tests) |
 | **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependencies (`/health/dependencies`) |
 
@@ -1929,13 +1950,13 @@ fleetops/
 
 ## 23. Testing
 
-FleetOps includes **289 automated tests** executing with 100% pass rate:
+FleetOps includes **295 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 123 Passed (0 Failed, 0 Skipped)
-  Total:                         289 Passed across all suites
+  FleetOps.IntegrationTests.dll: 129 Passed (0 Failed, 0 Skipped)
+  Total:                         295 Passed across all suites
 ```
 
 ### Key Test Categories
@@ -1944,9 +1965,11 @@ Suite Execution Summary:
 - **Distributed Tracing Tests (`TracingPropagationTests`):** Automated runtime verification via `ActivityListener` of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
 - **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
 - **Resilience & Failure Injection Tests (`FailureInjectionTests`):** Empirical failure boundary validation using real PostgreSQL and RabbitMQ: (1) successful RabbitMQ publication with database update failure and idempotent consumer redelivery; (2) abrupt consumer crash post-commit and pre-ACK with broker redelivery (`Redelivered == true`) preserving a single business effect; (3) database transaction rollback on physical constraint violation ensuring in-memory domain event retention and zero committed Outbox messages.
+- **Capacity & Failure Under Load Tests (`CapacityAndFailureUnderLoadTests`):** Empirical validation across 4 failure-under-load lifecycles: (1) broker outage during concurrent writes with outbox accumulation and zero event loss upon recovery; (2) PostgreSQL outage with liveness 200, readiness 503, and sanitized HTTP 500 ProblemDetails; (3) consumer worker suspension with queue growth and clean post-restart drainage; (4) crash-before-ack broker redelivery with idempotency preservation and exactly one business record.
 - **Rate Limiting Tests (`RateLimitingTests`):** Validates local per-instance Fixed Window rate limiting (100 req/60s, QueueLimit 0), HTTP 429 Too Many Requests response code, `Retry-After` response header, and sanitized RFC 9457 `ProblemDetails` payload.
 - **Operational Metrics Tests (`MetricsVerificationTests`):** Validates runtime emission of meters and instruments via `System.Diagnostics.Metrics.MeterListener` (`fleetops.outbox.messages.published`, `fleetops.consumer.messages.processed`, latency histograms) with bounded cardinality.
 - **Graceful Degradation Tests (`GracefulDegradationTests`):** Validates transactional decoupling when RabbitMQ broker is offline: `/health/ready` returns 200 OK (PostgreSQL alive), `/health/dependencies` reports `Degraded` with dependency breakdowns, command writes commit to PostgreSQL, and messages accumulate safely in Outbox.
+- **Messaging Topology & Configuration Tests (`RabbitMqOptionsTests`):** Asserts dynamic retry queue naming (`150ms` vs `10s`) and strict TTL argument compatibility (`x-message-ttl`), preventing AMQP 406 precondition conflicts across environments.
 - **Persistence Integration Tests:** Executed against PostgreSQL, validating migrations, partial unique indexes, and schema constraints.
 - **Optimistic Concurrency Tests:** Validates `xmin` version conflict detection under simulated concurrent updates.
 - **Mutual Exclusion Tests:** Asserts that database partial unique index `ix_maintenances_vehicle_id` rejects simultaneous maintenance orders for the same vehicle.
@@ -1955,7 +1978,7 @@ Suite Execution Summary:
   - Outbox publishing with Publisher Confirms.
   - Consumer deduplication via `MessageId`.
   - Immediate dead-lettering of poison messages.
-  - Native TTL retry queue schedule (10s, 30s, 90s).
+  - Native TTL retry queue schedule with dynamic naming.
   - Redelivery handling after simulated consumer crash without data duplication.
   - Clean channel teardown during graceful shutdown.
 - **Docker Infrastructure Tests:** Asserts Dockerfile multi-stage builds, non-root user execution, and compose topology declarations.
@@ -2175,6 +2198,7 @@ Formal Architecture Decision Records documenting engineering decisions, problem 
 | [ADR-012](docs/adr/ADR-012-operational-metrics-and-telemetry.md) | Operational Metrics and Telemetry Cardinality Discipline | Accepted | System.Diagnostics.Metrics with bounded dimensions for Outbox and Consumer |
 | [ADR-013](docs/adr/ADR-013-load-testing-and-performance-baseline.md) | Empirical Performance Baseline via k6 | Accepted | Automated reproducible load, sustained, and spike profiles without fantasy benchmarks |
 | [ADR-014](docs/adr/ADR-014-sli-slo-and-error-budget-framework.md) | Service Level Objectives (SLOs) and Error Budget Framework | Accepted | Mathematically grounded SLIs/SLOs covering latency, availability, and processing delay |
+| [ADR-015](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md) | Capacity Engineering, Domain-Level Workloads, and Performance Boundary Validation | Accepted | Relational domain transaction capacity boundaries and empirical saturation engineering |
 
 ---
 
@@ -2254,6 +2278,10 @@ Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cál
 - [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
 - [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
 
+> [!NOTE]
+> **Posicionamento e Veredito Final (P2):**
+> Isso posiciona o FleetOps API como um projeto de portfólio tecnicamente avançado, demonstrando práticas de engenharia de sistemas distribuídos, confiabilidade operacional e capacity engineering no ecossistema .NET.
+
 ```bash
 # Execução seletiva de suites de teste de carga:
 ./load-tests/run-benchmarks.ps1 -Suite Health
@@ -2272,7 +2300,7 @@ Planned future enhancements:
 - [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
 - [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
 - [x] **CI/CD Automation:** GitHub Actions CI workflow with clean containerized PostgreSQL and RabbitMQ execution.
-- [x] **Formal Architecture & Failure Engineering:** 15 formal ADRs and real-infrastructure failure injection integration test suite (293 tests).
+- [x] **Formal Architecture & Failure Engineering:** 15 formal ADRs and real-infrastructure failure injection integration test suite (295 tests).
 - [x] **Operational Metrics:** Native `System.Diagnostics.Metrics.Meter("FleetOps")` instrumentation adhering to strict cardinality discipline.
 - [x] **In-Process Rate Limiting:** ASP.NET Core Fixed Window rate limiting with RFC 9457 `ProblemDetails` (HTTP 429) and `Retry-After`.
 - [x] **Health Probing Semantics:** Clean separation of `/health/live`, `/health/ready`, and `/health/dependencies` with graceful degradation reporting.
@@ -2284,7 +2312,7 @@ Planned future enhancements:
 
 ---
 
-## 37. Author
+## 38. Author
 
 **Author:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
