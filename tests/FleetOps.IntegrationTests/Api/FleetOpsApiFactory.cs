@@ -31,6 +31,9 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
         builder.UseSetting("Jwt:SecretKey", TestJwtSecret);
         builder.UseSetting("Jwt:Issuer", TestJwtIssuer);
         builder.UseSetting("Jwt:Audience", TestJwtAudience);
+        builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:0", "150");
+        builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:1", "300");
+        builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:2", "450");
 
         builder.ConfigureServices(services =>
         {

@@ -128,6 +128,7 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
     [Fact]
     public async Task OutboxProcessor_PublishesEventToRabbitMQ_WithPublisherConfirm()
     {
+        await PurgeQueuesAsync();
         var vehicle = Vehicle.Create(
             Guid.NewGuid(),
             LicensePlate.Create("RAB-0002"),
@@ -299,6 +300,7 @@ public sealed class RabbitMqIntegrationTests : BaseIntegrationTest
             }
         }
 
+        await Task.Delay(300);
         await consumer.StopAsync(CancellationToken.None);
 
         await using (var context = CreateDbContext())

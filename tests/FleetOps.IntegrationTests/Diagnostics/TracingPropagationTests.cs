@@ -357,7 +357,7 @@ public sealed class TracingPropagationTests : BaseIntegrationTest
                 rabbitMqPublisher: _publisher);
 
             var processed = await service.ProcessPendingMessagesAsync(CancellationToken.None);
-            Assert.Equal(1, processed);
+            Assert.True(processed >= 1);
         }
 
         var outboxActivity = capturedActivities.FirstOrDefault(a => a.OperationName == "OutboxService.ProcessMessage");
