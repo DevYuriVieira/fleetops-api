@@ -2204,16 +2204,19 @@ Target SLOs established under empirical operating characteristics:
 
 ---
 
-## 35. Empirical Performance Baseline (k6 Benchmarks)
+## 35. Infrastructure / Health Baseline (In-Memory HTTP Benchmarks)
 
-Empirical load testing executed with **k6 v0.56.0** against the production Release build of FleetOps API on local host infrastructure:
+> [!WARNING]
+> **Contexto Operacional e Distinção Arquitetural:**
+> O benchmark de **~808 RPS** estabelecido na Sprint P1 corresponde **exclusivamente a sondas de diagnóstico in-memory** (`/health/live`), onde o Kestrel responde sem persistência, sem transações relacionais e sem serialização de mensagens. **Não deve ser interpretado como capacidade de negócio ou taxa de comandos transacionais da FleetOps API.**
+
+Empirical load testing executed with **k6 v0.56.0** against in-memory diagnostic probes:
 
 ```text
 Host Environment:
-  OS: Windows 11 / AMD Ryzen / 16 cores
-  PostgreSQL: 18 (Local instance on port 5433)
-  RabbitMQ: 3.13 (Local instance on port 5672)
+  OS: Windows 11 Enterprise (x64) / AMD Ryzen / 16 cores / 32 GB RAM
   Build: Release (--configuration Release)
+  Target: GET /health/live, GET /health/dependencies
 ```
 
 | Scenario | Concurrency (VUs) | Duration | Total Requests | Throughput (RPS) | P50 Latency | P90 Latency | P95 Latency | Max Latency | Error Rate |
@@ -2222,25 +2225,58 @@ Host Environment:
 | **Sustained Load** | 15 VUs | 30s | 17,123 | **568.74 req/s** | 565 µs | 1.77 ms | 2.41 ms | 83.80 ms | **0.00%** (0 / 17,123) |
 | **Traffic Spike** | Ramp to 40 VUs | 20s | 16,178 | **808.09 req/s** | 592 µs | 1.59 ms | 2.10 ms | 9.49 ms | **0.00%** (0 / 16,178) |
 
+---
+
+## 36. Domain Capacity & Saturation Validation (Database Transactional Benchmarks)
+
+> [!IMPORTANT]
+> **Metodologia Evidence-First (Sprint P2):**
+> Para medir a capacidade real de domínio sem extrapolações infundadas, a carga foi direcionada ao endpoint de escrita transacional autenticado (`POST /api/vehicles`), exercitando o pipeline completo: validação criptográfica de token JWT, instanciação de agregados e invariantes de domínio, transações ACID com MVCC `xmin` no PostgreSQL 18 e persistência no Transactional Outbox.
+> 
+> *Nota de Honestidade Operacional:* Todos os benchmarks foram executados em ambiente de desenvolvimento local (single-node). Os números refletem o comportamento observado sob as condições descritas e **não equivalem a capacidade máxima em cluster produtivo distribuído**. O ponto de saturação é dependente do hardware e da infraestrutura de teste.
+
+### Tabela de Capacidade Empírica Observada (Sprint P2)
+
+| Workload | Concorrência | Requisições | Throughput Observado | P50 | P90 | P95 | Max | Erros HTTP | Persistência DB | Veredito |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **RateLimit Burst** | 10 VUs (10s) | 7,716 reqs | **759.38 req/s** | 1.08 ms | 2.46 ms | 3.32 ms | 515.45 ms | 98.70% (HTTP 429) | 100 veículos | **PASS (RFC 9457 / RFC 6585)** |
+| **Domain Baseline** | 5 VUs (30s) | 2,596 reqs | **86.27 req/s** | 5.63 ms | 9.88 ms | 11.81 ms | 369.81 ms | **0.00%** | 2,595 veículos | **PASS (Capacidade Estável)** |
+| **Domain Sustained** | 15 VUs (45s) | 12,526 reqs | **277.83 req/s** | 3.88 ms | 43.73 ms | 72.16 ms | 200.29 ms | **0.00%** | 12,525 veículos | **PASS (Vazão Sustentável)** |
+| **Domain Spike** | 5 &rarr; 35 &rarr; 5 VUs | 3,072 reqs | **153.16 req/s** | 10.12 ms | 260.59 ms | 357.84 ms | 1.13 s | **0.00%** | 3,071 veículos | **PASS (Recuperação sem Falhas)** |
+| **Domain Stress** | 5 &rarr; 70 VUs (50s) | 9,921 reqs | **198.31 req/s** | 75.36 ms | 348.10 ms | 392.93 ms | 801.66 ms | **0.00%** | 9,920 veículos | **PASS (Saturação Observada)** |
+
+### Conclusões de Engenharia de Capacidade:
+1. **Vazão Sustentável Máxima:** Atingida em **15 VUs** com **277.83 RPS**, P50 de **3.88 ms** e P95 de **72.16 ms**.
+2. **Knee de Degradação / Ponto de Saturação:** Observado entre **25 e 35 VUs**. Acima dessa faixa, a concorrência adicional causa contenção no pool de conexões do PostgreSQL e serialização de transações no Npgsql, elevando o P50 para **75.36 ms** e reduzindo a vazão média para **198.31 RPS**.
+3. **Resiliência sob Falha:** Testes de integração em runtime comprovaram que a indisponibilidade simultânea de RabbitMQ não impede escritas no banco (Outbox acumula e drena automaticamente após recuperação com 0 perdas).
+
+Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
+- [ADR-015 — Capacity Engineering and Performance Validation](file:///c:/Users/Yuri/OneDrive/Desktop/C#/fleetops/docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
+- [P2 Capacity & Operational Proof Report](file:///c:/Users/Yuri/OneDrive/Desktop/C#/fleetops/docs/performance/P2-CAPACITY-REPORT.md)
+
 ```bash
-# How to run reproducible benchmarks locally:
-./load-tests/run-benchmarks.ps1 -BaseUrl "http://localhost:5000"
+# Execução seletiva de suites de teste de carga:
+./load-tests/run-benchmarks.ps1 -Suite Health
+./load-tests/run-benchmarks.ps1 -Suite Domain
+./load-tests/run-benchmarks.ps1 -Suite Stress
+./load-tests/run-benchmarks.ps1 -Suite RateLimit
+./load-tests/run-benchmarks.ps1 -Suite All
 ```
 
 ---
 
-## 36. Roadmap
+## 37. Roadmap
 
 Planned future enhancements:
 - [x] **Authentication & Role-Based Access Control:** Native JWT Bearer token generation and RBAC authorization policies (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
 - [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
 - [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
 - [x] **CI/CD Automation:** GitHub Actions CI workflow with clean containerized PostgreSQL and RabbitMQ execution.
-- [x] **Formal Architecture & Failure Engineering:** 14 formal ADRs and real-infrastructure failure injection integration test suite (289 tests).
+- [x] **Formal Architecture & Failure Engineering:** 15 formal ADRs and real-infrastructure failure injection integration test suite (293 tests).
 - [x] **Operational Metrics:** Native `System.Diagnostics.Metrics.Meter("FleetOps")` instrumentation adhering to strict cardinality discipline.
 - [x] **In-Process Rate Limiting:** ASP.NET Core Fixed Window rate limiting with RFC 9457 `ProblemDetails` (HTTP 429) and `Retry-After`.
 - [x] **Health Probing Semantics:** Clean separation of `/health/live`, `/health/ready`, and `/health/dependencies` with graceful degradation reporting.
-- [x] **Empirical Performance Baseline:** Reproducible k6 benchmark suite measuring throughput (up to 808 RPS) and sub-millisecond latencies.
+- [x] **Domain Capacity Engineering:** Empirically measured domain transactional capacity (up to 278 RPS) and progressive stress saturation.
 - [x] **Operational Runbooks:** SRE procedures for PostgreSQL outages, RabbitMQ broker downtime, outbox backlogs, and DLQ handling.
 - [ ] **External OIDC Integration:** Federated identity integration with Keycloak or Auth0.
 - [ ] **Prometheus Exporter & Grafana Dashboards:** Pre-built dashboards for outbox latency, retry rates, and consumer throughput.
