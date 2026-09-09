@@ -717,6 +717,7 @@ Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estrit
 |:---:|:---|:---|:---:|
 | `GET` | `/health/live` | Liveness Probe (processo do ASP.NET Core ativo) | `200 OK` |
 | `GET` | `/health/ready` | Readiness Probe (validação de conexão ativa com PostgreSQL) | `200 OK` / `503` |
+| `GET` | `/health/dependencies` | Sonda de Diagnóstico (inspeção de PostgreSQL e RabbitMQ com estado Degraded) | `200 OK` / `503` |
 | `GET` | `/openapi/v1.json` | Documento de especificação OpenAPI 3.1 da API | `200 OK` |
 
 ---
@@ -734,6 +735,7 @@ Erros e exceções gerados na aplicação são interceptados centralizadamente p
 | `ValidationException` | `400 Bad Request` | "Bad Request" | Validação de entrada na camada de aplicação |
 | `ArgumentException` | `400 Bad Request` | "Bad Request" | Argumento ausente ou formato incompatível |
 | `BadHttpRequestException` / `JsonException` | `400 Bad Request` | "Bad Request" | Payload JSON malformado na requisição HTTP |
+| `RateLimitExceeded` | `429 Too Many Requests` | "Too Many Requests" | Limite de requisições por nó atingido (cabeçalho `Retry-After: 1`) |
 | Exceções Não Tratadas | `500 Internal Server Error` | "Internal Server Error" | Mensagem genérica sanitizada com rastreio via `traceId` |
 
 > [!SECURITY]
@@ -827,6 +829,7 @@ Todos os spans são exportados via protocolo OTLP gRPC (`port 4317`) diretamente
 A API provê probes compatíveis com orquestradores de containers:
 - **Liveness (`/health/live`):** Avaliação ultra-leve sem I/O externo. Responde `200 OK` confirmando que a thread de execução do processo está ativa.
 - **Readiness (`/health/ready`):** Avalia a conectividade real com o banco de dados executando `_dbContext.Database.CanConnectAsync()`. Retorna `200 OK` quando o banco aceita conexões ou `503 Service Unavailable` em caso de indisponibilidade.
+- **Dependências (`/health/dependencies`):** Inspeção diagnóstica de infraestrutura detalhando o estado de cada dependência (PostgreSQL e RabbitMQ). Reporta `Healthy` quando todos os serviços respondem, `Degraded` quando o RabbitMQ está indisponível (preservando escritas via Outbox), e `Unhealthy` (`503`) se o banco de dados estiver offline.
 
 ---
 
@@ -836,6 +839,11 @@ A API provê probes compatíveis com orquestradores de containers:
 fleetops/
 ├── compose.yaml                      # Orquestração local (API, PostgreSQL, RabbitMQ, Jaeger)
 ├── Dockerfile                        # Multi-stage build .NET 10 (non-root $APP_UID)
+├── docs/                             # Documentação técnica aprofundada
+│   ├── adr/                          # 15 Architecture Decision Records (ADR-001 a ADR-015)
+│   ├── performance/                  # Relatório de capacidade empírica e saturação (Sprint P2)
+│   └── runbooks/                     # 4 cadernos operacionais de remediação de incidentes (SRE)
+├── load-tests/                       # Scripts k6 de carga (Health, Domain, Stress, RateLimit)
 ├── .dockerignore                     # Filtros de exclusão de artefatos de compilação
 ├── .editorconfig                     # Padrões de formatação e análise estática de código
 ├── .env.example                      # Variáveis de ambiente padrão para desenvolvimento local
@@ -850,7 +858,7 @@ fleetops/
 │   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 117 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C, Resiliência e Injeção de Falhas)
+    └── FleetOps.IntegrationTests/    # 129 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C, Resiliência e Injeção de Falhas)
 ```
 
 ---
@@ -963,19 +971,20 @@ cp .env.example .env
 ```
 
 ### 3. Execução Completa via Docker Compose
-Suba toda a stack containerizada (API + PostgreSQL + RabbitMQ):
+Suba toda a stack containerizada (API + PostgreSQL + RabbitMQ + Jaeger):
 ```bash
 docker compose up --build
 ```
 - API REST: `http://localhost:5000`
 - OpenAPI JSON: `http://localhost:5000/openapi/v1.json`
 - Painel RabbitMQ Management: `http://localhost:15672` (Usuário: `guest`, Senha: `guest`)
+- Interface Web Jaeger UI: `http://localhost:16686`
 
 ### 4. Execução Local para Desenvolvimento (Host)
 Para rodar a API diretamente no host conectando-se aos containers:
 ```bash
 # Iniciar apenas os serviços de infraestrutura
-docker compose up -d postgres rabbitmq
+docker compose up -d postgres rabbitmq jaeger
 
 # Restaurar dependências e compilar a solução
 dotnet restore
@@ -1132,7 +1141,85 @@ Procedimentos Operacionais Padrão (SOP) e runbooks de remediação de incidente
 
 ---
 
-## 34. Roadmap de Evoluções Futuras
+## 34. Objetivos de Nível de Serviço (SLOs) e Error Budgets
+
+SLOs alvo estabelecidos com base em características operacionais empíricas:
+
+| Serviço / Fluxo | Indicador de Nível de Serviço (SLI) | Meta de SLO (Janela Móvel de 30 Dias) | Error Budget Mensal | Limiar de Alerta de Consumo de Budget |
+|---|---|---|---|---|
+| **Escritas Síncronas da API** | Respostas HTTP bem-sucedidas (`2xx` ou erro do cliente `4xx` vs falhas de servidor `5xx`) | $\ge 99.9\%$ Disponibilidade | 0.10% (43.2 min downtime) | 2% consumido em 1 hora; 5% consumido em 6 horas |
+| **Latência Síncrona da API** | Duração de resposta P95 em endpoints `/api/*` | $\le 250\text{ ms}$ (P95) | 5% de amostras de cauda excedendo 250 ms | 10% excedendo em janela de 15 minutos |
+| **Latência de Relay do Outbox** | Tempo entre `occurred_on_utc` e ACK de publicação no broker | $\le 5.0\text{ s}$ (P95) | 5% de eventos atrasados além de 5s | Backlog não processado $> 500$ mensagens por $> 2\text{ min}$ |
+| **Latência de Processamento do Consumidor** | Tempo do despacho do consumidor até o commit transacional e ACK | $\le 100\text{ ms}$ (P95) | 5% de mensagens atrasadas além de 100 ms | Contagem de falhas do consumidor $> 10$ em 1 minuto |
+
+---
+
+## 35. Baseline de Infraestrutura e Saúde (Benchmarks HTTP In-Memory)
+
+> [!WARNING]
+> **Contexto Operacional e Distinção Arquitetural:**
+> O benchmark de **~808 RPS** estabelecido na Sprint P1 corresponde **exclusivamente a sondas de diagnóstico in-memory** (`/health/live`), onde o Kestrel responde sem persistência, sem transações relacionais e sem serialização de mensagens. **Não deve ser interpretado como capacidade de negócio ou taxa de comandos transacionais da FleetOps API.**
+
+Testes de carga empíricos executados com **k6 v0.56.0** contra sondas diagnósticas in-memory:
+
+```text
+Ambiente de Execução:
+  SO: Windows 11 Enterprise (x64) / AMD Ryzen / 16 cores / 32 GB RAM
+  Build: Release (--configuration Release)
+  Alvo: GET /health/live, GET /health/dependencies
+```
+
+| Cenário | Concorrência (VUs) | Duração | Total de Requisições | Throughput (RPS) | Latência P50 | Latência P90 | Latência P95 | Latência Máxima | Taxa de Erro |
+|---|---|---|---|---|---|---|---|---|---|
+| **Baseline Load** | 5 VUs | 30s | 2.764 | **91.81 req/s** | 2.69 ms | 9.17 ms | 10.34 ms | 74.56 ms | **0.00%** (0 / 2.764) |
+| **Sustained Load** | 15 VUs | 30s | 17.123 | **568.74 req/s** | 565 µs | 1.77 ms | 2.41 ms | 83.80 ms | **0.00%** (0 / 17.123) |
+| **Traffic Spike** | Rampa até 40 VUs | 20s | 16.178 | **808.09 req/s** | 592 µs | 1.59 ms | 2.10 ms | 9.49 ms | **0.00%** (0 / 16.178) |
+
+---
+
+## 36. Capacidade de Domínio e Validação de Saturação (Benchmarks Transacionais com Banco de Dados)
+
+> [!IMPORTANT]
+> **Metodologia Evidence-First (Sprint P2):**
+> Para medir a capacidade real de domínio sem extrapolações infundadas, a carga foi direcionada ao endpoint de escrita transacional autenticado (`POST /api/vehicles`), exercitando o pipeline completo: validação criptográfica de token JWT, instanciação de agregados e invariantes de domínio, transações ACID com MVCC `xmin` no PostgreSQL 18 e persistência no Transactional Outbox.
+> 
+> *Nota de Honestidade Operacional:* Todos os benchmarks foram executados em ambiente de desenvolvimento local (single-node). Os números refletem o comportamento observado sob as condições descritas e **não equivalem a capacidade máxima em cluster produtivo distribuído**. O ponto de saturação é dependente do hardware e da infraestrutura de teste.
+
+### Tabela de Capacidade Empírica Observada (Sprint P2)
+
+| Workload | Concorrência | Requisições | Throughput Observado | P50 | P90 | P95 | Max | Erros HTTP | Persistência DB | Veredito |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **RateLimit Burst** | 10 VUs (10s) | 7.716 reqs | **759.38 req/s** | 1.08 ms | 2.46 ms | 3.32 ms | 515.45 ms | 98.70% (HTTP 429) | 100 veículos | **PASS (RFC 9457 / RFC 6585)** |
+| **Domain Baseline** | 5 VUs (30s) | 2.596 reqs | **86.27 req/s** | 5.63 ms | 9.88 ms | 11.81 ms | 369.81 ms | **0.00%** | 2.595 veículos | **PASS (Capacidade Estável)** |
+| **Domain Sustained** | 15 VUs (45s) | 12.526 reqs | **277.83 req/s** | 3.88 ms | 43.73 ms | 72.16 ms | 200.29 ms | **0.00%** | 12.525 veículos | **PASS (Vazão Sustentável)** |
+| **Domain Spike** | 5 &rarr; 35 &rarr; 5 VUs | 3.072 reqs | **153.16 req/s** | 10.12 ms | 260.59 ms | 357.84 ms | 1.13 s | **0.00%** | 3.071 veículos | **PASS (Recuperação sem Falhas)** |
+| **Domain Stress** | 5 &rarr; 70 VUs (50s) | 9.921 reqs | **198.31 req/s** | 75.36 ms | 348.10 ms | 392.93 ms | 801.66 ms | **0.00%** | 9.920 veículos | **PASS (Saturação Observada)** |
+
+### Conclusões de Engenharia de Capacidade:
+1. **Pico de Vazão Sustentável Observado no Workload:** Atingido em **15 VUs** com **277.83 RPS**, P50 de **3.88 ms** e P95 de **72.16 ms**. *(Nota: Representa o pico observado no perfil testado, não o teto teórico absoluto do sistema).*
+2. **Knee de Degradação / Ponto de Saturação:** Observado entre **25 e 35 VUs**. Acima dessa faixa, a concorrência adicional causa contenção no pool de conexões do Npgsql (`Duração da transação relacional ↑ → Ocupação de conexões ↑ → Fila de espera no pool Npgsql ↑ → Latência percebida ↑`), elevando o P50 para **75.36 ms** e reduzindo a vazão média observada para **198.31 RPS**.
+3. **Resiliência sob Spike e Falha:** Sob spike de 35 VUs, a latência atingiu temporariamente 1.13s; após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido. Em testes com RabbitMQ offline, nenhuma perda de eventos foi observada (Outbox acumulou e drenou automaticamente após a recuperação).
+
+Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
+- [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
+- [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
+
+> [!NOTE]
+> **Posicionamento e Veredito Final (P2):**
+> Isso posiciona o FleetOps API como um projeto de portfólio tecnicamente avançado, demonstrando práticas de engenharia de sistemas distribuídos, confiabilidade operacional e capacity engineering no ecossistema .NET.
+
+```bash
+# Execução seletiva de suites de teste de carga:
+./load-tests/run-benchmarks.ps1 -Suite Health
+./load-tests/run-benchmarks.ps1 -Suite Domain
+./load-tests/run-benchmarks.ps1 -Suite Stress
+./load-tests/run-benchmarks.ps1 -Suite RateLimit
+./load-tests/run-benchmarks.ps1 -Suite All
+```
+
+---
+
+## 37. Roadmap de Evoluções Futuras
 
 Itens previstos para iterações futuras no ciclo do produto:
 - [x] **Autenticação & Autorização:** Implementação de JWT Bearer tokens e RBAC nativo com suporte a múltiplos papéis (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
@@ -1140,13 +1227,18 @@ Itens previstos para iterações futuras no ciclo do produto:
 - [x] **Concorrência de Outbox Multi-Réplica:** Bloqueio defensivo de linha com `FOR UPDATE SKIP LOCKED` para alta escalabilidade horizontal sem lock contention.
 - [x] **Pipeline CI/CD:** Automação de compilação, verificação de formatação de código e suíte de testes com PostgreSQL e RabbitMQ via GitHub Actions.
 - [x] **Formalização Arquitetural, Resiliência e Engenharia de Capacidade:** 15 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas e capacidade sob carga com infraestrutura real (295 testes).
+- [x] **Métricas Operacionais:** Instrumentação nativa `System.Diagnostics.Metrics.Meter("FleetOps")` aderindo à disciplina estrita de cardinalidade.
+- [x] **Rate Limiting em Memória:** ASP.NET Core Fixed Window rate limiting com RFC 9457 `ProblemDetails` (HTTP 429) e cabeçalho `Retry-After`.
+- [x] **Semântica de Sondas de Saúde:** Separação clara de `/health/live`, `/health/ready` e `/health/dependencies` com relatório de degradação graciosa.
+- [x] **Engenharia de Capacidade de Domínio:** Medição empírica da capacidade transacional de domínio (até 278 RPS) e saturação progressiva sob estresse.
+- [x] **Cadernos Operacionais de Remediação:** Procedimentos SRE para queda do PostgreSQL, queda do RabbitMQ, backlog no Outbox e tratamento de DLQ.
 - [ ] **Integração Externa OIDC:** Provedor federado de identidade com Keycloak ou Auth0.
 - [ ] **Métricas Prometheus & Dashboards Grafana:** Métricas customizadas de latência de fila, taxas de retry e contadores de mensagens processadas.
 - [ ] **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
 
 ---
 
-## 35. Autor
+## 38. Autor
 
 **Autor:** Yuri Vieira  
 **GitHub:** [https://github.com/DevYuriVieira](https://github.com/DevYuriVieira)
@@ -1566,6 +1658,37 @@ Result: Database state persisted, but domain event lost forever.
 6. The background OutboxProcessor polls pending records and safely publishes to RabbitMQ.
 ```
 
+### The `FleetOpsDbContext` Interception Lifecycle
+```csharp
+public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+{
+    var aggregatesWithEvents = ChangeTracker.Entries<AggregateRoot>()
+        .Where(e => e.Entity.DomainEvents.Count > 0)
+        .Select(e => e.Entity)
+        .ToList();
+
+    if (aggregatesWithEvents.Count > 0)
+    {
+        var outboxMessages = aggregatesWithEvents
+            .SelectMany(a => a.DomainEvents)
+            .Select(OutboxMessage.FromDomainEvent)
+            .ToList();
+
+        await OutboxMessages.AddRangeAsync(outboxMessages, cancellationToken);
+    }
+
+    var result = await base.SaveChangesAsync(cancellationToken);
+
+    // In-memory domain events are cleared ONLY after the database transaction commits successfully
+    foreach (var aggregate in aggregatesWithEvents)
+    {
+        aggregate.ClearDomainEvents();
+    }
+
+    return result;
+}
+```
+
 ### Multi-Replica Concurrency via `FOR UPDATE SKIP LOCKED`
 
 In distributed cloud deployments running multiple API pods/replicas (Kubernetes HPA or clustered containers), multiple `OutboxProcessor` instances poll the `outbox_messages` table simultaneously. Without row-level locking controls, concurrent replicas would select identical pending batches, causing:
@@ -1706,6 +1829,8 @@ flowchart TD
     Commit --> Ack[BasicAckAsync to RabbitMQ]
 ```
 
+If the broker redelivers a message due to an ungraceful container crash post-commit, querying by `MessageId` identifies the prior execution and immediately issues an ACK without duplicate business effects.
+
 ---
 
 ## 14. Retry & Dead Letter Queue (DLQ)
@@ -1814,6 +1939,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 |:---:|:---|:---|:---:|
 | `GET` | `/health/live` | Liveness probe (process responsive) | `200 OK` |
 | `GET` | `/health/ready` | Readiness probe (verifies database connection) | `200 OK` / `503` |
+| `GET` | `/health/dependencies` | Diagnostic probe (detailed status of PostgreSQL and RabbitMQ with Degraded state) | `200 OK` / `503` |
 | `GET` | `/openapi/v1.json` | OpenAPI 3.1 specification document | `200 OK` |
 
 ---
@@ -1831,6 +1957,7 @@ All uncaught exceptions are transformed into RFC 9457 responses by `GlobalExcept
 | `ValidationException` | `400 Bad Request` | "Bad Request" | Input validation failure |
 | `ArgumentException` | `400 Bad Request` | "Bad Request" | Argument validation failure |
 | `BadHttpRequestException` / `JsonException` | `400 Bad Request` | "Bad Request" | Malformed JSON request payload |
+| `RateLimitExceeded` | `429 Too Many Requests` | "Too Many Requests" | Per-instance fixed-window quota exceeded (`Retry-After: 1` header) |
 | Unhandled Exceptions | `500 Internal Server Error` | "Internal Server Error" | Sanitized generic message correlated by `traceId` |
 
 ---
@@ -1918,8 +2045,10 @@ Spans are streamed via OTLP gRPC (`port 4317`) directly to the Jaeger all-in-one
 
 ## 21. Observability & Health Checks
 
+FleetOps provides orchestrator-ready diagnostic probes:
 - **Liveness Probe (`/health/live`):** Zero-I/O probe confirming process availability. Returns `200 OK`.
 - **Readiness Probe (`/health/ready`):** Evaluates database connectivity using `_dbContext.Database.CanConnectAsync()`. Returns `200 OK` when healthy and `503 Service Unavailable` during database partitions.
+- **Dependency Diagnostics (`/health/dependencies`):** Detailed infrastructure inspection reporting the individual status of PostgreSQL and RabbitMQ. Returns `Healthy` when all components respond, `Degraded` when RabbitMQ is unavailable (preserving write availability via Outbox), and `Unhealthy` (`503`) if PostgreSQL is offline.
 
 ---
 
@@ -1929,6 +2058,11 @@ Spans are streamed via OTLP gRPC (`port 4317`) directly to the Jaeger all-in-one
 fleetops/
 ├── compose.yaml                      # Multi-container orchestration (API, PostgreSQL, RabbitMQ, Jaeger)
 ├── Dockerfile                        # Multi-stage .NET 10 build (non-root $APP_UID)
+├── docs/                             # Deep-dive engineering documentation
+│   ├── adr/                          # 15 Architecture Decision Records (ADR-001 through ADR-015)
+│   ├── performance/                  # Empirical capacity and saturation reports (Sprint P2)
+│   └── runbooks/                     # 4 operational incident remediation runbooks (SRE)
+├── load-tests/                       # k6 benchmark suites (Health, Domain, Stress, RateLimit)
 ├── .dockerignore                     # Build context exclusions
 ├── .editorconfig                     # Code analysis and formatting standards
 ├── .env.example                      # Default environment configuration template
@@ -1943,7 +2077,7 @@ fleetops/
 │   └── FleetOps.Api/                 # Thin controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 unit tests (Domain, Application, Architecture)
-    └── FleetOps.IntegrationTests/    # 114 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API, W3C Tracing)
+    └── FleetOps.IntegrationTests/    # 129 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API, W3C Tracing)
 ```
 
 ---
@@ -2059,11 +2193,12 @@ docker compose up --build
 - API root: `http://localhost:5000`
 - OpenAPI JSON: `http://localhost:5000/openapi/v1.json`
 - RabbitMQ Management UI: `http://localhost:15672` (Credentials: `guest` / `guest`)
+- Jaeger Web UI: `http://localhost:16686`
 
 ### 4. Local Host Development
 ```bash
-# Start PostgreSQL and RabbitMQ containers
-docker compose up -d postgres rabbitmq
+# Start PostgreSQL, RabbitMQ, and Jaeger containers
+docker compose up -d postgres rabbitmq jaeger
 
 # Restore and build
 dotnet restore
@@ -2095,6 +2230,9 @@ dotnet test
 | `POSTGRES_PASSWORD` | `fleetops_dev_secret` | PostgreSQL development password |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
 | `RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ Management Web UI port |
+
+> [!CAUTION]
+> Credentials documented in `.env.example` are strictly intended for local development. In production environments, secrets must be injected via secure key vaults (e.g., Azure Key Vault, AWS Secrets Manager, or Kubernetes Secrets). The API implements *fail-fast* logic that immediately terminates startup if the connection string or signing keys are absent.
 
 ---
 
@@ -2231,8 +2369,8 @@ Target SLOs established under empirical operating characteristics:
 ## 35. Infrastructure / Health Baseline (In-Memory HTTP Benchmarks)
 
 > [!WARNING]
-> **Contexto Operacional e Distinção Arquitetural:**
-> O benchmark de **~808 RPS** estabelecido na Sprint P1 corresponde **exclusivamente a sondas de diagnóstico in-memory** (`/health/live`), onde o Kestrel responde sem persistência, sem transações relacionais e sem serialização de mensagens. **Não deve ser interpretado como capacidade de negócio ou taxa de comandos transacionais da FleetOps API.**
+> **Operational Context & Architectural Distinction:**
+> The **~808 RPS** baseline established in Sprint P1 corresponds **exclusively to in-memory diagnostic probes** (`/health/live`), where Kestrel responds without database persistence, relational transactions, or message serialization. **It must not be interpreted as business throughput or transactional command capacity of FleetOps API.**
 
 Empirical load testing executed with **k6 v0.56.0** against in-memory diagnostic probes:
 
@@ -2254,36 +2392,36 @@ Host Environment:
 ## 36. Domain Capacity & Saturation Validation (Database Transactional Benchmarks)
 
 > [!IMPORTANT]
-> **Metodologia Evidence-First (Sprint P2):**
-> Para medir a capacidade real de domínio sem extrapolações infundadas, a carga foi direcionada ao endpoint de escrita transacional autenticado (`POST /api/vehicles`), exercitando o pipeline completo: validação criptográfica de token JWT, instanciação de agregados e invariantes de domínio, transações ACID com MVCC `xmin` no PostgreSQL 18 e persistência no Transactional Outbox.
+> **Evidence-First Methodology (Sprint P2):**
+> To measure genuine domain capacity without unfounded extrapolations, load was directed at the authenticated transactional write endpoint (`POST /api/vehicles`), exercising the full end-to-end pipeline: cryptographic JWT token validation, domain aggregate instantiation and invariants, ACID transactions with MVCC `xmin` in PostgreSQL 18, and Transactional Outbox persistence.
 > 
-> *Nota de Honestidade Operacional:* Todos os benchmarks foram executados em ambiente de desenvolvimento local (single-node). Os números refletem o comportamento observado sob as condições descritas e **não equivalem a capacidade máxima em cluster produtivo distribuído**. O ponto de saturação é dependente do hardware e da infraestrutura de teste.
+> *Operational Honesty Note:* All benchmarks were executed in a local development environment (single-node). The metrics reflect observed behavior under the documented conditions and **do not equate to maximum throughput in a distributed production cluster**. The saturation point depends on hardware and test infrastructure.
 
-### Tabela de Capacidade Empírica Observada (Sprint P2)
+### Observed Empirical Capacity Table (Sprint P2)
 
-| Workload | Concorrência | Requisições | Throughput Observado | P50 | P90 | P95 | Max | Erros HTTP | Persistência DB | Veredito |
+| Workload | Concurrency | Total Requests | Observed Throughput | P50 Latency | P90 Latency | P95 Latency | Max Latency | HTTP Errors | DB Persistence | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **RateLimit Burst** | 10 VUs (10s) | 7,716 reqs | **759.38 req/s** | 1.08 ms | 2.46 ms | 3.32 ms | 515.45 ms | 98.70% (HTTP 429) | 100 veículos | **PASS (RFC 9457 / RFC 6585)** |
-| **Domain Baseline** | 5 VUs (30s) | 2,596 reqs | **86.27 req/s** | 5.63 ms | 9.88 ms | 11.81 ms | 369.81 ms | **0.00%** | 2,595 veículos | **PASS (Capacidade Estável)** |
-| **Domain Sustained** | 15 VUs (45s) | 12,526 reqs | **277.83 req/s** | 3.88 ms | 43.73 ms | 72.16 ms | 200.29 ms | **0.00%** | 12,525 veículos | **PASS (Vazão Sustentável)** |
-| **Domain Spike** | 5 &rarr; 35 &rarr; 5 VUs | 3,072 reqs | **153.16 req/s** | 10.12 ms | 260.59 ms | 357.84 ms | 1.13 s | **0.00%** | 3,071 veículos | **PASS (Recuperação sem Falhas)** |
-| **Domain Stress** | 5 &rarr; 70 VUs (50s) | 9,921 reqs | **198.31 req/s** | 75.36 ms | 348.10 ms | 392.93 ms | 801.66 ms | **0.00%** | 9,920 veículos | **PASS (Saturação Observada)** |
+| **RateLimit Burst** | 10 VUs (10s) | 7,716 reqs | **759.38 req/s** | 1.08 ms | 2.46 ms | 3.32 ms | 515.45 ms | 98.70% (HTTP 429) | 100 vehicles | **PASS (RFC 9457 / RFC 6585)** |
+| **Domain Baseline** | 5 VUs (30s) | 2,596 reqs | **86.27 req/s** | 5.63 ms | 9.88 ms | 11.81 ms | 369.81 ms | **0.00%** | 2,595 vehicles | **PASS (Stable Capacity)** |
+| **Domain Sustained** | 15 VUs (45s) | 12,526 reqs | **277.83 req/s** | 3.88 ms | 43.73 ms | 72.16 ms | 200.29 ms | **0.00%** | 12,525 vehicles | **PASS (Sustainable Throughput)** |
+| **Domain Spike** | 5 &rarr; 35 &rarr; 5 VUs | 3,072 reqs | **153.16 req/s** | 10.12 ms | 260.59 ms | 357.84 ms | 1.13 s | **0.00%** | 3,071 vehicles | **PASS (Clean Recovery)** |
+| **Domain Stress** | 5 &rarr; 70 VUs (50s) | 9,921 reqs | **198.31 req/s** | 75.36 ms | 348.10 ms | 392.93 ms | 801.66 ms | **0.00%** | 9,920 vehicles | **PASS (Observed Saturation)** |
 
-### Conclusões de Engenharia de Capacidade:
-1. **Pico de Vazão Sustentável Observado no Workload:** Atingido em **15 VUs** com **277.83 RPS**, P50 de **3.88 ms** e P95 de **72.16 ms**. *(Nota: Representa o pico observado no perfil testado, não o teto teórico absoluto do sistema).*
-2. **Knee de Degradação / Ponto de Saturação:** Observado entre **25 e 35 VUs**. Acima dessa faixa, a concorrência adicional causa contenção no pool de conexões do Npgsql (`Duração da transação relacional ↑ → Ocupação de conexões ↑ → Fila de espera no pool Npgsql ↑ → Latência percebida ↑`), elevando o P50 para **75.36 ms** e reduzindo a vazão média observada para **198.31 RPS**.
-3. **Resiliência sob Spike e Falha:** Sob spike de 35 VUs, a latência atingiu temporariamente 1.13s; após a redução da concorrência, as requisições subsequentes retornaram ao regime normal de latência observado, com recuperação operacional inferior a 15 ms no cenário medido. Em testes com RabbitMQ offline, nenhuma perda de eventos foi observada (Outbox acumulou e drenou automaticamente após a recuperação).
+### Capacity Engineering Conclusions:
+1. **Observed Sustainable Peak Throughput:** Reached at **15 VUs** with **277.83 RPS**, P50 of **3.88 ms**, and P95 of **72.16 ms**. *(Note: Represents the peak observed in the tested profile, not the absolute theoretical ceiling of the system).*
+2. **Degradation Knee / Saturation Point:** Observed between **25 and 35 VUs**. Beyond this threshold, additional concurrency causes contention on the Npgsql connection pool (`Relational transaction duration ↑ → Connection hold time ↑ → Wait queue in Npgsql pool ↑ → Perceived latency ↑`), driving P50 to **75.36 ms** and lowering average observed throughput to **198.31 RPS**.
+3. **Resilience Under Spike and Outage:** Under a 35 VU spike, latency reached 1.13s temporarily; after concurrency returned to baseline, subsequent requests reverted to normal operating latency, with operational recovery in under 15 ms in the tested scenario. In tests with RabbitMQ offline, zero event loss occurred (Outbox buffered messages and drained automatically upon recovery).
 
-Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
+For exhaustive details, component telemetry, bottleneck analysis, and Error Budget calculations:
 - [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
 - [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
 
 > [!NOTE]
-> **Posicionamento e Veredito Final (P2):**
-> Isso posiciona o FleetOps API como um projeto de portfólio tecnicamente avançado, demonstrando práticas de engenharia de sistemas distribuídos, confiabilidade operacional e capacity engineering no ecossistema .NET.
+> **Portfolio Positioning & Final Verdict (P2):**
+> This establishes the FleetOps API as a technically advanced portfolio system, showcasing distributed systems engineering, operational reliability, and capacity engineering practices in the .NET ecosystem.
 
 ```bash
-# Execução seletiva de suites de teste de carga:
+# Selective load test suite execution:
 ./load-tests/run-benchmarks.ps1 -Suite Health
 ./load-tests/run-benchmarks.ps1 -Suite Domain
 ./load-tests/run-benchmarks.ps1 -Suite Stress
