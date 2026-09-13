@@ -38,7 +38,7 @@
 | **Confiabilidade de Eventos** | Transactional Outbox Pattern integrado ao `DbContext.SaveChangesAsync` |
 | **Concorrência no Outbox** | `FOR UPDATE SKIP LOCKED` (Trabalhadores paralelos selecionam lotes distintos sem aguardar linhas bloqueadas) |
 | **Rastreamento Distribuído** | OpenTelemetry .NET + Jaeger (Propagação W3C `traceparent` de ponta a ponta: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) |
-| **Autenticação & Autorização** | JWT Bearer Tokens (HMAC-SHA256) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
+| **Autenticação & Autorização** | OpenID Connect (OIDC) / OAuth 2.0 Resource Server via Keycloak (RS256 + JWKS) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Semântica de Entrega** | Bounded At-least-once delivery (com retries finitos e Dead-Letter Queue) |
 | **Idempotência de Consumo** | Efeito de negócio único dentro da fronteira transacional auditada (`MessageId` PK) |
 | **Controle de Resiliência** | Dead-Letter Exchange (DLX), Filas TTL de Retry (10s, 30s, 90s) e Dead-Letter Queue (DLQ) |
@@ -657,12 +657,7 @@ Ao despachar uma mensagem com falha para a fila de retry ou para a DLQ, o consum
 
 ## 17. Inventário de Endpoints REST (REST API)
 
-Todos os 28 endpoints de negócio utilizam verbos semânticos e contratos estritos:
-
-### Autenticação (`/api/auth`) — `[AllowAnonymous]`
-| Método | Rota | Objetivo | Sucesso |
-|:---:|:---|:---|:---:|
-| `POST` | `/api/auth/token` | Gerar token JWT assinado para autenticação e testes RBAC | `200 OK` |
+Todos os 27 endpoints de negócio utilizam verbos semânticos e contratos estritos (a emissão de tokens é delegada ao Identity Provider Keycloak):
 
 ### Veículos (`/api/vehicles`) — Roles: `Admin`, `FleetManager`
 | Método | Rota | Objetivo | Sucesso |
@@ -743,9 +738,21 @@ Erros e exceções gerados na aplicação são interceptados centralizadamente p
 
 ---
 
-## 19. Autenticação e Controle de Acesso Baseado em Papéis (JWT & RBAC)
+## 19. Autenticação e Controle de Acesso Baseado em Papéis (OIDC, Keycloak & RBAC)
 
-A API protege seus recursos através de autenticação **JWT Bearer** (RFC 7519) com assinatura criptográfica HMAC-SHA256 e controle granular de autorização baseado em papéis (**RBAC - Role-Based Access Control**):
+O FleetOps API opera estritamente como um **OAuth 2.0 / OpenID Connect Resource Server**, delegando a responsabilidade de identidade, credenciais e emissão de tokens para um Identity Provider centralizado (**Keycloak**). A API não emite tokens, não armazena senhas e não possui chaves privadas.
+
+### Arquitetura Criptográfica e Protocolar
+- **Emissão Assegurada por IdP (Keycloak):** O Keycloak assina tokens JWT de acesso utilizando chaves assimétricas **RS256 (RSA-2048)**.
+- **Validação Dinâmica via JWKS:** A API consome o documento de descoberta OIDC (`/.well-known/openid-configuration`) e obtém as chaves públicas pelo endpoint de certificados (`/protocol/openid-connect/certs`). Rotação de chaves no IdP é suportada transparentemente sem reinicialização da API.
+- **Validações Estritas:** A API valida assinatura criptográfica, emissor canônico (`iss`), audiência (`aud: fleetops-api`), tempo de vida (`exp`) com `ClockSkew` deliberadamente controlado (1 minuto), rejeitando qualquer algoritmo não homologado.
+- **Fail-Fast no Startup:** Caso `Jwt:Authority` ou `Jwt:Audience` não estejam configurados, a API aborta a inicialização imediatamente com erro fatal explícito.
+- **Mapeamento Determinístico de Papéis:** As roles do cliente são extraídas exclusivamente de `resource_access.fleetops-api.roles` e mapeadas para `ClaimTypes.Role` do ASP.NET Core, prevenindo escalonamento de privilégios.
+
+### Fluxos Recomendados (OAuth 2.0 / OIDC)
+1. **Aplicações Interativas (Web/Mobile):** Fluxo obrigatório **Authorization Code com PKCE**.
+2. **Integrações Máquina-a-Máquina (M2M / Daemons):** Fluxo **Client Credentials**.
+3. **Ambiente de Testes / Automação Local:** Direct Access Grants (Password Grant) habilitado exclusivamente para conveniência de testes automatizados e CI com credenciais sintéticas.
 
 ### Matriz de Papéis e Permissões
 
@@ -756,28 +763,41 @@ A API protege seus recursos através de autenticação **JWT Bearer** (RFC 7519)
 | `Dispatcher` | Gestão logística de tráfego e despachos | `/api/deliveries/*`, `/api/routes/*` |
 | `Driver` | Acesso operacional de condutor | Reservado no modelo RBAC para futuras consultas operacionais de condutores |
 
-### Fluxo de Autenticação e Emissão de Token
+### Usuários Sintéticos de Demonstração / Testes (Realm: `fleetops`)
+| Usuário | Senha | Roles Atribuídas (`fleetops-api`) | Escopo de Acesso |
+|---|---|---|---|
+| `admin@fleetops.local` | `test1234` | `Admin` | Acesso administrativo irrestrito |
+| `manager@fleetops.local` | `test1234` | `FleetManager` | Gestão de veículos, motoristas e manutenções |
+| `dispatcher@fleetops.local` | `test1234` | `Dispatcher` | Gestão de entregas e rotas |
+| `driver@fleetops.local` | `test1234` | `Driver` | Acesso operacional de condutor |
+| `multirole@fleetops.local` | `test1234` | `FleetManager`, `Dispatcher` | Múltiplas funções operacionais |
+| `norole@fleetops.local` | `test1234` | *(Nenhuma)* | Autenticado, sem permissão em recursos protegidos |
+
+### Fluxo de Autenticação OIDC Resource Server
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Cliente / Aplicação Externa
-    participant Auth as POST /api/auth/token
-    participant API as Endpoints Protegidos (/api/vehicles...)
+    actor Client as Cliente / Aplicação
+    participant IdP as Keycloak (IdP / Authorization Server)
+    participant RS as FleetOps API (Resource Server)
 
-    Client->>Auth: {"username": "gestor1", "role": "FleetManager"}
-    Auth-->>Client: 200 OK {"accessToken": "eyJhbG...", "tokenType": "Bearer", "expiresIn": 28800}
+    Note over Client,IdP: Obtenção do Access Token (ex: Password Grant para automação)
+    Client->>IdP: POST /realms/fleetops/protocol/openid-connect/token
+    IdP-->>Client: 200 OK {"access_token": "eyJhbGciOiJSUzI1NiIs...", "token_type": "Bearer"}
 
-    Client->>API: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
-    Note over API: Valida assinatura, emissor, audiência, expiração e Role
-    API-->>Client: 201 Created (Operação Autorizada)
+    Note over Client,RS: Requisição Autenticada contra o Resource Server
+    Client->>RS: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
+    Note over RS: Valida RS256 via JWKS, iss, aud, exp e mapeia roles de resource_access.fleetops-api
+    RS-->>Client: 201 Created (Operação Autorizada)
 
-    Client->>API: POST /api/vehicles (Sem header ou token inválido)
-    API-->>Client: 401 Unauthorized
+    Client->>RS: POST /api/vehicles (Sem token ou com assinatura forjada)
+    RS-->>Client: 401 Unauthorized
 
-    Client->>API: POST /api/vehicles (Com Role: Driver)
-    API-->>Client: 403 Forbidden
+    Client->>RS: POST /api/vehicles (Token com papel insuficiente, ex: Driver)
+    RS-->>Client: 403 Forbidden
 ```
+
 
 ---
 
@@ -938,7 +958,8 @@ graph TD
 | **Linguagem C#** | C# 14 | Sintaxe moderna, tipagem estrita e imutabilidade com `record` |
 | **Plataforma .NET** | .NET 10.0 | Runtime de execução de alto desempenho |
 | **Framework HTTP** | ASP.NET Core 10.0.11 | Roteamento REST, DI e pipeline de middlewares |
-| **Autenticação & RBAC** | JwtBearer 10.0.11 | Assinatura HMAC-SHA256 e autorização declarativa por papéis |
+| **Autenticação & RBAC** | JwtBearer 10.0.11 | OIDC Resource Server, validação assimétrica RS256 com JWKS dinâmico e RBAC |
+| **Identity Provider (IdP)** | Keycloak 26.1.0 | Servidor OIDC/OAuth 2.0, gerenciamento de credenciais e emissão RS256 |
 | **Banco de Dados** | PostgreSQL 18-alpine | Armazenamento relacional ACID, índices parciais e `xmin` |
 | **Provedor ORM** | EF Core 10.0.11 / Npgsql 10.0.3 | Mapeamento relacional e controle transacional |
 | **Broker de Mensagens** | RabbitMQ 3-management-alpine | Fila de mensageria assíncrona, trocas e DLQ |
@@ -971,20 +992,21 @@ cp .env.example .env
 ```
 
 ### 3. Execução Completa via Docker Compose
-Suba toda a stack containerizada (API + PostgreSQL + RabbitMQ + Jaeger):
+Suba toda a stack containerizada (API + PostgreSQL + RabbitMQ + Jaeger + Keycloak):
 ```bash
 docker compose up --build
 ```
 - API REST: `http://localhost:5000`
 - OpenAPI JSON: `http://localhost:5000/openapi/v1.json`
+- Keycloak IdP: `http://localhost:8080` (Realm: `fleetops`, Admin dev: `admin`/`admin`)
 - Painel RabbitMQ Management: `http://localhost:15672` (Usuário: `guest`, Senha: `guest`)
 - Interface Web Jaeger UI: `http://localhost:16686`
 
 ### 4. Execução Local para Desenvolvimento (Host)
 Para rodar a API diretamente no host conectando-se aos containers:
 ```bash
-# Iniciar apenas os serviços de infraestrutura
-docker compose up -d postgres rabbitmq jaeger
+# Iniciar os serviços de infraestrutura e Identity Provider
+docker compose up -d postgres rabbitmq jaeger keycloak
 
 # Restaurar dependências e compilar a solução
 dotnet restore
@@ -1260,7 +1282,7 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Event Reliability** | Transactional Outbox Pattern integrated into `DbContext.SaveChangesAsync` |
 | **Outbox Concurrency** | `FOR UPDATE SKIP LOCKED` (Parallel workers select disjoint batches without waiting on locked rows) |
 | **Distributed Tracing** | OpenTelemetry .NET + Jaeger (End-to-end W3C `traceparent` context propagation: HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer) |
-| **Authentication & RBAC** | JWT Bearer Tokens (HMAC-SHA256) + Role-Based Access Control (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
+| **Authentication & RBAC** | OpenID Connect (OIDC) / OAuth 2.0 Resource Server via Keycloak (RS256 + JWKS) + RBAC (`Admin`, `FleetManager`, `Dispatcher`, `Driver`) |
 | **Delivery Semantics** | Bounded At-least-once delivery (with finite retries and Dead-Letter Queue) |
 | **Consumer Idempotency** | Single business effect within audited transaction boundary (`MessageId` PK) |
 | **Resilience & Fault Tolerance** | Dead-Letter Exchange (DLX), TTL-based Retry Queues (10s, 30s, 90s), and DLQ |
@@ -1881,10 +1903,7 @@ When routing a failing message to a retry queue or DLQ, the consumer **awaits po
 
 ## 17. REST API Endpoints
 
-### Authentication (`/api/auth`) — `[AllowAnonymous]`
-| Method | Route | Purpose | Success |
-|:---:|:---|:---|:---:|
-| `POST` | `/api/auth/token` | Issue signed JWT Bearer token for testing and RBAC validation | `200 OK` |
+All 27 business endpoints employ semantic HTTP verbs and strict contracts (token issuance is delegated to Keycloak):
 
 ### Vehicles (`/api/vehicles`) — Roles: `Admin`, `FleetManager`
 | Method | Route | Purpose | Success |
@@ -1962,9 +1981,21 @@ All uncaught exceptions are transformed into RFC 9457 responses by `GlobalExcept
 
 ---
 
-## 19. Authentication & Role-Based Access Control (JWT & RBAC)
+## 19. Authentication & Role-Based Access Control (OIDC, Keycloak & RBAC)
 
-FleetOps secures all business operations via **JWT Bearer Authentication** (RFC 7519) signed with HMAC-SHA256 and granular **Role-Based Access Control (RBAC)**:
+FleetOps API operates strictly as an **OAuth 2.0 / OpenID Connect Resource Server**, delegating user identity, credential storage, and token issuance to a centralized Identity Provider (**Keycloak**). FleetOps never issues tokens, never stores user passwords, and never holds private signing keys.
+
+### Cryptographic & Protocol Architecture
+- **IdP-Issued RS256 Tokens:** Keycloak signs access tokens using asymmetric **RS256 (RSA-2048)** keys.
+- **Dynamic JWKS Discovery:** The API dynamically fetches Keycloak's OpenID Connect discovery document (`/.well-known/openid-configuration`) and public signing keys (`/protocol/openid-connect/certs`). Seamless key rotation is handled via automatic JWKS refresh.
+- **Strict Validations:** The API strictly validates digital signatures, canonical issuer (`iss`), audience (`aud: fleetops-api`), lifetime (`exp`), and enforces a tight `ClockSkew` (1 minute).
+- **Startup Fail-Fast:** Missing `Jwt:Authority` or `Jwt:Audience` configuration values trigger immediate application startup failure.
+- **Deterministic Role Mapping:** Client roles are extracted exclusively from `resource_access.fleetops-api.roles` and mapped to ASP.NET Core `ClaimTypes.Role`, preventing privilege escalation.
+
+### Recommended Client Flows (OAuth 2.0 / OIDC)
+1. **Interactive Client Applications (Web/Mobile):** **Authorization Code Flow with PKCE**.
+2. **Machine-to-Machine (Service Integrations):** **Client Credentials Grant**.
+3. **Automated Testing & CI:** Direct Access Grants (Resource Owner Password Credentials) enabled solely as an automation convenience with synthetic test accounts.
 
 ### Role Permissions Matrix
 
@@ -1975,28 +2006,41 @@ FleetOps secures all business operations via **JWT Bearer Authentication** (RFC 
 | `Dispatcher` | Transit, shipment dispatch, and route planning | `/api/deliveries/*`, `/api/routes/*` |
 | `Driver` | Operator view | Reserved in RBAC model for future operational query endpoints |
 
-### Authentication & Token Issuance Flow
+### Synthetic Test Accounts (Realm: `fleetops`)
+| Username | Password | Client Roles (`fleetops-api`) | Access Scope |
+|---|---|---|---|
+| `admin@fleetops.local` | `test1234` | `Admin` | Full administrative access |
+| `manager@fleetops.local` | `test1234` | `FleetManager` | Vehicles, drivers, and maintenance management |
+| `dispatcher@fleetops.local` | `test1234` | `Dispatcher` | Deliveries and routes management |
+| `driver@fleetops.local` | `test1234` | `Driver` | Driver operational views |
+| `multirole@fleetops.local` | `test1234` | `FleetManager`, `Dispatcher` | Multi-role fleet and logistics operations |
+| `norole@fleetops.local` | `test1234` | *(None)* | Authenticated, no resource access |
+
+### OIDC Resource Server Sequence Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as External Client / User
-    participant Auth as POST /api/auth/token
-    participant API as Protected Endpoints (/api/vehicles...)
+    participant IdP as Keycloak (IdP / Authorization Server)
+    participant RS as FleetOps API (Resource Server)
 
-    Client->>Auth: {"username": "manager1", "role": "FleetManager"}
-    Auth-->>Client: 200 OK {"accessToken": "eyJhbG...", "tokenType": "Bearer", "expiresIn": 28800}
+    Note over Client,IdP: Token Acquisition (e.g. Password Grant for automation)
+    Client->>IdP: POST /realms/fleetops/protocol/openid-connect/token
+    IdP-->>Client: 200 OK {"access_token": "eyJhbGciOiJSUzI1NiIs...", "token_type": "Bearer"}
 
-    Client->>API: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
-    Note over API: Validates signature, issuer, audience, expiry, and Role
-    API-->>Client: 201 Created (Authorized Request)
+    Note over Client,RS: Authenticated Request to Resource Server
+    Client->>RS: POST /api/vehicles (Header: Authorization: Bearer eyJhbG...)
+    Note over RS: Validates RS256 via JWKS, iss, aud, exp and maps roles from resource_access.fleetops-api
+    RS-->>Client: 201 Created (Authorized Request)
 
-    Client->>API: POST /api/vehicles (Missing or invalid token)
-    API-->>Client: 401 Unauthorized
+    Client->>RS: POST /api/vehicles (Missing or forged token)
+    RS-->>Client: 401 Unauthorized
 
-    Client->>API: POST /api/vehicles (With Role: Driver)
-    API-->>Client: 403 Forbidden
+    Client->>RS: POST /api/vehicles (Insufficient role, e.g. Driver)
+    RS-->>Client: 403 Forbidden
 ```
+
 
 ---
 
@@ -2155,7 +2199,8 @@ graph TD
 | **Language** | C# 14 | Strongly-typed business logic and immutable `record` commands |
 | **Runtime** | .NET 10.0 | High-performance execution runtime |
 | **Web Framework** | ASP.NET Core 10.0.11 | HTTP routing, dependency injection, and middleware |
-| **Authentication & RBAC** | JwtBearer 10.0.11 | HMAC-SHA256 signing and declarative role-based authorization |
+| **Authentication & RBAC** | JwtBearer 10.0.11 | OIDC Resource Server, RS256 asymmetric signature validation via JWKS, and RBAC |
+| **Identity Provider (IdP)** | Keycloak 26.1.0 | OIDC/OAuth 2.0 IdP, credential management, and RS256 token issuance |
 | **Database** | PostgreSQL 18-alpine | Relational ACID storage, partial indexes, and MVCC `xmin` |
 | **ORM & Driver** | EF Core 10.0.11 / Npgsql 10.0.3 | Object-relational mapping and change tracking |
 | **Message Broker** | RabbitMQ 3-management-alpine | Event routing, topic exchange, and dead-lettering |
@@ -2192,13 +2237,14 @@ docker compose up --build
 ```
 - API root: `http://localhost:5000`
 - OpenAPI JSON: `http://localhost:5000/openapi/v1.json`
+- Keycloak IdP: `http://localhost:8080` (Realm: `fleetops`, Dev Admin: `admin` / `admin`)
 - RabbitMQ Management UI: `http://localhost:15672` (Credentials: `guest` / `guest`)
 - Jaeger Web UI: `http://localhost:16686`
 
 ### 4. Local Host Development
 ```bash
-# Start PostgreSQL, RabbitMQ, and Jaeger containers
-docker compose up -d postgres rabbitmq jaeger
+# Start PostgreSQL, RabbitMQ, Jaeger, and Keycloak containers
+docker compose up -d postgres rabbitmq jaeger keycloak
 
 # Restore and build
 dotnet restore

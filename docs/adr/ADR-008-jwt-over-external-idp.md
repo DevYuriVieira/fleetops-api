@@ -1,7 +1,7 @@
 # ADR-008 — Resource Server JWT Authentication with Startup Fail-Fast Validation and Environment-Guarded Issuance
 
 ## Status
-Accepted
+Superseded by [ADR-016](ADR-016-openid-connect-keycloak.md)
 
 ## Context
 FleetOps API exposes REST endpoints for fleet operations. Access must be restricted based on caller identity and assigned roles (`Admin`, `FleetManager`, `Dispatcher`, `Driver`).
