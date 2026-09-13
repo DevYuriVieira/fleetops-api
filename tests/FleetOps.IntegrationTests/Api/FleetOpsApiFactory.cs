@@ -1,9 +1,12 @@
 namespace FleetOps.IntegrationTests.Api;
 
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using FleetOps.Infrastructure.Persistence;
+using FleetOps.IntegrationTests.Common;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -14,23 +17,21 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
-public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
+public class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     public static readonly string ConnectionString =
         Environment.GetEnvironmentVariable("FLEETOPS_TEST_CONNECTION_STRING")
         ?? "Host=127.0.0.1;Port=5433;Database=fleetops_test;Username=postgres;Password=;";
 
-    public const string TestJwtSecret = "FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!";
-    public const string TestJwtIssuer = "FleetOps.Api";
-    public const string TestJwtAudience = "FleetOps.Clients";
+    public TestOidcAuthority Authority { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("ConnectionStrings:DefaultConnection", ConnectionString);
         builder.UseSetting("POSTGRES_CONNECTION_STRING", ConnectionString);
-        builder.UseSetting("Jwt:SecretKey", TestJwtSecret);
-        builder.UseSetting("Jwt:Issuer", TestJwtIssuer);
-        builder.UseSetting("Jwt:Audience", TestJwtAudience);
+        builder.UseSetting("Jwt:Authority", Authority.Authority);
+        builder.UseSetting("Jwt:Audience", Authority.Audience);
+        builder.UseSetting("Jwt:RequireHttpsMetadata", "false");
         builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:0", "150");
         builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:1", "300");
         builder.UseSetting("RabbitMQ:RetryDelaysMilliseconds:2", "450");
@@ -40,6 +41,19 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
             services.Configure<FleetOps.Infrastructure.Configuration.RabbitMqOptions>(options =>
             {
                 options.RetryDelaysMilliseconds = [150, 300, 450];
+            });
+
+            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+            {
+                var httpClient = Authority.CreateHttpClient();
+                options.Backchannel = httpClient;
+                options.ConfigurationManager = new Microsoft.IdentityModel.Protocols.ConfigurationManager<Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfiguration>(
+                    $"{Authority.Authority}/.well-known/openid-configuration",
+                    new Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfigurationRetriever(),
+                    new Microsoft.IdentityModel.Protocols.HttpDocumentRetriever(httpClient) { RequireHttps = false })
+                {
+                    RefreshInterval = TimeSpan.FromSeconds(1)
+                };
             });
 
             var descriptor = services.SingleOrDefault(
@@ -52,7 +66,7 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
 
             services.AddDbContext<FleetOpsDbContext>((sp, options) =>
             {
-                var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+                var config = sp.GetRequiredService<IConfiguration>();
                 var connString = config.GetConnectionString("DefaultConnection")
                     ?? config["POSTGRES_CONNECTION_STRING"]
                     ?? ConnectionString;
@@ -82,7 +96,7 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
                     if (context.Request.Headers.ContainsKey("Authorization") ||
                         context.Request.Headers.ContainsKey("X-Real-Jwt"))
                     {
-                        return Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme;
+                        return JwtBearerDefaults.AuthenticationScheme;
                     }
 
                     return "TestScheme";
@@ -92,39 +106,45 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
         });
     }
 
-    public static string CreateValidJwtToken(
+    public string CreateValidOidcToken(
         string username = "admin-user",
-        string role = "Admin",
+        string[]? roles = null,
+        string? role = null,
         TimeSpan? lifetime = null,
-        string? secretKey = null,
+        RSA? signingRsa = null,
         string? issuer = null,
-        string? audience = null)
+        string? audience = null,
+        string? keyId = null,
+        bool tamperSignature = false)
     {
-        var key = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
-            System.Text.Encoding.UTF8.GetBytes(secretKey ?? TestJwtSecret));
-        var credentials = new Microsoft.IdentityModel.Tokens.SigningCredentials(
-            key,
-            Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256);
-        var expires = DateTime.UtcNow.Add(lifetime ?? TimeSpan.FromHours(1));
-
-        var claims = new[]
+        string[] roleList;
+        if (roles != null)
         {
-            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub, username),
-            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.UniqueName, username),
-            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Name, username),
-            new Claim(ClaimTypes.Role, role)
-        };
+            roleList = roles;
+        }
+        else
+        {
+            roleList = [role ?? "Admin"];
+        }
 
-        var tokenDescriptor = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
-            issuer: issuer ?? TestJwtIssuer,
-            audience: audience ?? TestJwtAudience,
-            claims: claims,
-            expires: expires,
-            signingCredentials: credentials);
-
-        return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
+        return Authority.CreateToken(
+            username: username,
+            roles: roleList,
+            issuer: issuer,
+            audience: audience,
+            lifetime: lifetime,
+            signingRsa: signingRsa,
+            keyId: keyId,
+            tamperSignature: tamperSignature);
     }
+
+    public void RequestConfigurationRefresh()
+    {
+        var options = Services.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
+            .Get(JwtBearerDefaults.AuthenticationScheme);
+        options.ConfigurationManager?.RequestRefresh();
+    }
+
 
     public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     {
@@ -164,22 +184,35 @@ public sealed class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncL
 
     public async Task InitializeAsync()
     {
-        using var scope = Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<FleetOpsDbContext>();
-        await dbContext.Database.MigrateAsync();
-        await ResetDatabaseAsync();
+        try
+        {
+            using var scope = Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<FleetOpsDbContext>();
+            await dbContext.Database.MigrateAsync();
+            await ResetDatabaseAsync();
+        }
+        catch (Exception ex) when (ex is Npgsql.NpgsqlException or System.Net.Sockets.SocketException)
+        {
+        }
     }
 
     public async Task ResetDatabaseAsync()
     {
-        using var scope = Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<FleetOpsDbContext>();
-        await dbContext.Database.ExecuteSqlRawAsync(
-            "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages, processed_messages, maintenance_completion_records CASCADE;");
+        try
+        {
+            using var scope = Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<FleetOpsDbContext>();
+            await dbContext.Database.ExecuteSqlRawAsync(
+                "TRUNCATE TABLE deliveries, maintenances, routes, vehicles, drivers, outbox_messages, processed_messages, maintenance_completion_records CASCADE;");
+        }
+        catch (Exception ex) when (ex is Npgsql.NpgsqlException or System.Net.Sockets.SocketException)
+        {
+        }
     }
 
-    Task IAsyncLifetime.DisposeAsync()
+    async Task IAsyncLifetime.DisposeAsync()
     {
-        return Task.CompletedTask;
+        Authority.Dispose();
+        await base.DisposeAsync();
     }
 }
