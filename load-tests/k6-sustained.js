@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import { tryAcquireToken } from './auth-helper.js';
 
 export const options = {
     vus: 15,
@@ -13,18 +14,8 @@ export const options = {
 const BASE_URL = __ENV.API_BASE_URL || 'http://localhost:5000';
 
 export function setup() {
-    // Acquire JWT token for write operations
-    const tokenRes = http.post(`${BASE_URL}/api/auth/token`, JSON.stringify({
-        username: 'loadtest-manager',
-        role: 'FleetManager'
-    }), {
-        headers: { 'Content-Type': 'application/json' }
-    });
-
-    if (tokenRes.status === 200) {
-        return { token: JSON.parse(tokenRes.body).accessToken };
-    }
-    return { token: null };
+    // Acquire JWT token for write operations if available
+    return { token: tryAcquireToken('manager@fleetops.local', 'test1234') };
 }
 
 export default function (data) {

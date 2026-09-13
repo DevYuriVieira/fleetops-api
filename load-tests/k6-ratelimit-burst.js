@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import { acquireToken } from './auth-helper.js';
 
 // =========================================================================
 // SPRINT P2 — RATE LIMITING BURST & RFC 9457 COMPLIANCE BENCHMARK
@@ -21,18 +22,7 @@ export const options = {
 const BASE_URL = __ENV.API_BASE_URL || 'http://localhost:5000';
 
 export function setup() {
-    const tokenRes = http.post(`${BASE_URL}/api/auth/token`, JSON.stringify({
-        username: 'p2-ratelimit-manager',
-        role: 'FleetManager'
-    }), {
-        headers: { 'Content-Type': 'application/json' }
-    });
-
-    if (tokenRes.status !== 200) {
-        throw new Error(`Failed to acquire JWT token: ${tokenRes.status} ${tokenRes.body}`);
-    }
-
-    return { token: JSON.parse(tokenRes.body).accessToken };
+    return { token: acquireToken('manager@fleetops.local', 'test1234') };
 }
 
 export default function (data) {
