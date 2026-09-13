@@ -15,13 +15,17 @@ services:
       RabbitMQ__Username: ${RABBITMQ_USER:-guest}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
-      Jwt__SecretKey: ${JWT_SECRET:-FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!}
-      Jwt__Issuer: FleetOps.Api
-      Jwt__Audience: FleetOps.Clients
+      Jwt__Authority: http://localhost:8080/realms/fleetops
+      Jwt__ValidIssuer: http://localhost:8080/realms/fleetops
+      Jwt__MetadataAddress: http://keycloak:8080/realms/fleetops/.well-known/openid-configuration
+      Jwt__Audience: fleetops-api
+      Jwt__RequireHttpsMetadata: "false"
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
       jaeger:
         condition: service_started
@@ -87,6 +91,30 @@ services:
       - "4318:4318"   # OpenTelemetry Protocol (OTLP) HTTP
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - fleetops-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.0
+    container_name: fleetops-keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME_URL: http://localhost:8080
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
     networks:
       - fleetops-network
 

@@ -1,0 +1,236 @@
+{
+  "id": "fleetops",
+  "realm": "fleetops",
+  "displayName": "FleetOps Identity Realm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "Admin",
+        "description": "Full administrative access across FleetOps resources"
+      },
+      {
+        "name": "FleetManager",
+        "description": "Fleet operations management access (vehicles, maintenances, drivers)"
+      },
+      {
+        "name": "Dispatcher",
+        "description": "Operational dispatch access (routes, deliveries)"
+      },
+      {
+        "name": "Driver",
+        "description": "Driver access for assigned delivery execution"
+      }
+    ],
+    "client": {
+      "fleetops-api": [
+        {
+          "name": "Admin",
+          "description": "Administrator role for FleetOps API",
+          "clientRole": true
+        },
+        {
+          "name": "FleetManager",
+          "description": "Fleet Manager role for FleetOps API",
+          "clientRole": true
+        },
+        {
+          "name": "Dispatcher",
+          "description": "Dispatcher role for FleetOps API",
+          "clientRole": true
+        },
+        {
+          "name": "Driver",
+          "description": "Driver role for FleetOps API",
+          "clientRole": true
+        }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "fleetops-api",
+      "name": "FleetOps API Resource Server",
+      "description": "FleetOps API OAuth 2.0 / OIDC Client and Resource Server",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": false,
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "fleetops-api-dev-secret",
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
+      "protocolMappers": [
+        {
+          "name": "fleetops-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "fleetops-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@fleetops.local",
+      "email": "admin@fleetops.local",
+      "firstName": "System",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "Admin"
+      ],
+      "clientRoles": {
+        "fleetops-api": [
+          "Admin"
+        ]
+      }
+    },
+    {
+      "username": "manager@fleetops.local",
+      "email": "manager@fleetops.local",
+      "firstName": "Fleet",
+      "lastName": "Manager",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "FleetManager"
+      ],
+      "clientRoles": {
+        "fleetops-api": [
+          "FleetManager"
+        ]
+      }
+    },
+    {
+      "username": "dispatcher@fleetops.local",
+      "email": "dispatcher@fleetops.local",
+      "firstName": "Operations",
+      "lastName": "Dispatcher",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "Dispatcher"
+      ],
+      "clientRoles": {
+        "fleetops-api": [
+          "Dispatcher"
+        ]
+      }
+    },
+    {
+      "username": "driver@fleetops.local",
+      "email": "driver@fleetops.local",
+      "firstName": "Fleet",
+      "lastName": "Driver",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "Driver"
+      ],
+      "clientRoles": {
+        "fleetops-api": [
+          "Driver"
+        ]
+      }
+    },
+    {
+      "username": "multirole@fleetops.local",
+      "email": "multirole@fleetops.local",
+      "firstName": "Multi",
+      "lastName": "Operator",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "FleetManager",
+        "Dispatcher"
+      ],
+      "clientRoles": {
+        "fleetops-api": [
+          "FleetManager",
+          "Dispatcher"
+        ]
+      }
+    },
+    {
+      "username": "norole@fleetops.local",
+      "email": "norole@fleetops.local",
+      "firstName": "Guest",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test1234",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [],
+      "clientRoles": {
+        "fleetops-api": []
+      }
+    }
+  ]
+}

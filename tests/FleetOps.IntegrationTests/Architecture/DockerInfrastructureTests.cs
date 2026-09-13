@@ -31,8 +31,12 @@ public sealed class DockerInfrastructureTests
 
         Assert.Contains("fleetops-api:", content);
         Assert.Contains("postgres:", content);
+        Assert.Contains("keycloak:", content);
         Assert.Contains("fleetops-network", content);
         Assert.Contains("postgres-data", content);
+
+        var realmExportPath = Path.Combine(root, "keycloak", "realm-export.json");
+        Assert.True(File.Exists(realmExportPath), "keycloak/realm-export.json must exist.");
     }
 
     [Fact]
