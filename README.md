@@ -11,7 +11,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![CI](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml/badge.svg)](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml)
-[![Automated Tests](https://img.shields.io/badge/Tests-295%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
+[![Automated Tests](https://img.shields.io/badge/Tests-300%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
 [![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
 
 **Production-Grade Fleet & Logistics Backend Engine**  
@@ -47,9 +47,11 @@
 | **Tratamento de Falhas** | RFC 9457 `ProblemDetails` sanitizado com mascaramento total de credenciais e SQL |
 | **Proteção de Runtime** | Rate Limiting em memória por instância (Fixed Window: 100 req/60s, QueueLimit 0) com RFC 9457 (HTTP 429) e `Retry-After` |
 | **Métricas & Observabilidade** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) com disciplina de cardinalidade |
-| **Testes Automatizados** | 295 testes automatizados (166 testes de unidade + 129 testes de integração e falhas) |
-| **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
+| **Testes Automatizados** | 300 testes automatizados (166 testes de unidade + 134 testes de integração e falhas) |
+| **Containerização** | Dockerfile multi-stage com execução non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Keycloak, Jaeger) |
 | **Contrato de API & Saúde** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependências (`/health/dependencies`) |
+| **Ferramentas de Engenharia** | Busca semântica local 100% offline em Python (LanceDB + SentenceTransformers `all-MiniLM-L6-v2`) para código C# e ADRs |
+| **Testes de Carga & Automação** | k6 em JavaScript (módulo ES6 `auth-helper.js` com aquisição de token Keycloak OIDC via Password Grant) + runner PowerShell |
 
 ---
 
@@ -745,9 +747,12 @@ O FleetOps API opera estritamente como um **OAuth 2.0 / OpenID Connect Resource 
 ### Arquitetura Criptográfica e Protocolar
 - **Emissão Assegurada por IdP (Keycloak):** O Keycloak assina tokens JWT de acesso utilizando chaves assimétricas **RS256 (RSA-2048)**.
 - **Validação Dinâmica via JWKS:** A API consome o documento de descoberta OIDC (`/.well-known/openid-configuration`) e obtém as chaves públicas pelo endpoint de certificados (`/protocol/openid-connect/certs`). Rotação de chaves no IdP é suportada transparentemente sem reinicialização da API.
+- **Canal de Metadados vs Emissor Canônico:** Em ambiente Docker/Compose, a API valida o emissor canônico público (`Jwt:ValidIssuer: http://localhost:8080/realms/fleetops`), enquanto consome a descoberta e o JWKS pelo backchannel da rede interna do Docker (`Jwt:MetadataAddress: http://keycloak:8080/realms/fleetops/.well-known/openid-configuration`), prevenindo dependência de roteamento externo ou hairpinning DNS.
+- **Cache de JWKS e Resiliência Offline:** O Resource Server realiza cache em memória das chaves públicas obtidas do JWKS. Caso o Keycloak seja reiniciado ou fique temporariamente offline após o boot, a API continua aceitando requisições com tokens assinados por chaves conhecidas em cache. Rotações de chave (`kid`) disparam a atualização dinâmica do JWKS.
 - **Validações Estritas:** A API valida assinatura criptográfica, emissor canônico (`iss`), audiência (`aud: fleetops-api`), tempo de vida (`exp`) com `ClockSkew` deliberadamente controlado (1 minuto), rejeitando qualquer algoritmo não homologado.
 - **Fail-Fast no Startup:** Caso `Jwt:Authority` ou `Jwt:Audience` não estejam configurados, a API aborta a inicialização imediatamente com erro fatal explícito.
 - **Mapeamento Determinístico de Papéis:** As roles do cliente são extraídas exclusivamente de `resource_access.fleetops-api.roles` e mapeadas para `ClaimTypes.Role` do ASP.NET Core, prevenindo escalonamento de privilégios.
+- **Automação de Carga com JavaScript (`load-tests/auth-helper.js`):** Os scripts de carga do k6 (JavaScript ES6) utilizam a função `acquireToken()` para negociar dinamicamente tokens de acesso via Password Grant no Keycloak com o usuário `manager@fleetops.local`, exercitando autenticação RS256 real sob estresse transacional.
 
 ### Fluxos Recomendados (OAuth 2.0 / OIDC)
 1. **Aplicações Interativas (Web/Mobile):** Fluxo obrigatório **Authorization Code com PKCE**.
@@ -857,13 +862,16 @@ A API provê probes compatíveis com orquestradores de containers:
 
 ```text
 fleetops/
-├── compose.yaml                      # Orquestração local (API, PostgreSQL, RabbitMQ, Jaeger)
+├── compose.yaml                      # Orquestração local (API, PostgreSQL, RabbitMQ, Keycloak, Jaeger)
 ├── Dockerfile                        # Multi-stage build .NET 10 (non-root $APP_UID)
 ├── docs/                             # Documentação técnica aprofundada
-│   ├── adr/                          # 15 Architecture Decision Records (ADR-001 a ADR-015)
+│   ├── adr/                          # 16 Architecture Decision Records (ADR-001 a ADR-016)
 │   ├── performance/                  # Relatório de capacidade empírica e saturação (Sprint P2)
 │   └── runbooks/                     # 4 cadernos operacionais de remediação de incidentes (SRE)
-├── load-tests/                       # Scripts k6 de carga (Health, Domain, Stress, RateLimit)
+├── keycloak/                         # Configuração e realm import do Keycloak (realm-export.json)
+├── load-tests/                       # Benchmarks k6 em JavaScript (auth-helper.js, perfis) + runner PowerShell
+├── tools/                            # Ferramentas auxiliares de engenharia
+│   └── vector-search/                # Busca semântica local em Python (LanceDB + SentenceTransformers)
 ├── .dockerignore                     # Filtros de exclusão de artefatos de compilação
 ├── .editorconfig                     # Padrões de formatação e análise estática de código
 ├── .env.example                      # Variáveis de ambiente padrão para desenvolvimento local
@@ -878,25 +886,25 @@ fleetops/
 │   └── FleetOps.Api/                 # Controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 testes de unidade (Domínio, Aplicação, Arquitetura)
-    └── FleetOps.IntegrationTests/    # 129 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, Auth API, Tracing W3C, Resiliência e Injeção de Falhas)
+    └── FleetOps.IntegrationTests/    # 134 testes de integração (Postgres, RabbitMQ, Concorrência Outbox, OIDC/Keycloak, Tracing W3C, Resiliência e Injeção de Falhas)
 ```
 
 ---
 
 ## 23. Estratégia de Testes Automatizados (Testing)
 
-O FleetOps possui **295 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
+O FleetOps possui **300 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
 
 ```text
 Resultados da Execução:
   FleetOps.UnitTests.dll:        166 Aprovados (0 Falhas, 0 Ignorados)
-  FleetOps.IntegrationTests.dll: 129 Aprovados (0 Falhas, 0 Ignorados)
-  Total:                         295 Aprovados em 100% da suíte
+  FleetOps.IntegrationTests.dll: 134 Aprovados (0 Falhas, 0 Ignorados)
+  Total:                         300 Aprovados em 100% da suíte
 ```
 
 ### Categorias Cobertas
 - **Testes de Arquitetura:** Verificação reflexiva estrita garantindo que `Domain` e `Application` não referenciem bibliotecas proibidas (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Garante também que todos os métodos de controllers e casos de uso aceitem `CancellationToken` e retornem `Task`.
-- **Testes de Autenticação e RBAC (`AuthApiTests`):** Validação de emissão de tokens JWT, rejeição de credenciais inválidas, validação criptográfica real via `JwtBearerHandler` (tokens expirados, chave incorreta, emissor/audiência inválidos, tampering de payload), resposta HTTP 401 Unauthorized para acessos sem token e HTTP 403 Forbidden para papéis insuficientes (ex: `Driver` tentando cadastrar veículos).
+- **Testes de Autenticação OIDC e RBAC (`AuthApiTests` e `KeycloakLiveIntegrationTests`):** Validação como Resource Server OAuth 2.0 / OpenID Connect validando tokens assimétricos RS256 emitidos pelo Keycloak via JWKS dinâmico. Cobertura de tokens válidos com mapeamento de roles (`Admin`, `FleetManager`, `Dispatcher`, `Driver`), tokens expirados, assinaturas adulteradas, chaves não confiáveis, emissor ou audiência divergentes, rotação dinâmica de chaves sem reinicialização e resiliência offline com cache de chaves do IdP. Inclui 7 testes E2E executados diretamente contra container Keycloak 26.1 real em CI.
 - **Testes de Rastreamento Distribuído (`TracingPropagationTests`):** Validação automatizada em runtime via `ActivityListener` da propagação de contexto W3C (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) de ponta a ponta: `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumidor.
 - **Testes de Concorrência de Outbox (`OutboxConcurrencyTests`):** Validação de que múltiplos workers executando concorrentemente sob `FOR UPDATE SKIP LOCKED` processam lotes disjuntos de mensagens sem sobreposição, sem lock contention e sem duplicação de eventos.
 - **Testes de Engenharia de Resiliência e Falhas (`FailureInjectionTests`):** Validação empírica de fronteiras de falha com PostgreSQL e RabbitMQ reais: (1) publicação RabbitMQ bem-sucedida com falha simulada na marcação de banco e reentrega tratada de forma idempotente pelo consumidor; (2) crash abrupto do consumidor pós-commit e pré-ACK com reentrega via broker (`Redelivered == true`) mantendo efeito de negócio estritamente único; (3) rollback de transação relacional por violação de integridade física assegurando retenção de eventos de domínio em memória e zero mensagens no Outbox.
@@ -969,6 +977,8 @@ graph TD
 | **Framework de Testes**| xUnit 2.9.3 | Execução de testes unitários e de integração |
 | **Host de Testes Web** | Microsoft.AspNetCore.Mvc.Testing 10.0.11 | Servidor in-memory para testes E2E de API |
 | **Documentação API** | Microsoft.AspNetCore.OpenApi 10.0.11 | Geração nativa de OpenAPI 3.1 |
+| **Busca Semântica Local** | Python 3.10+ / LanceDB 0.38 / SentenceTransformers 5.2 | Busca vetorial offline sobre código C# e ADRs (modelo `all-MiniLM-L6-v2`) |
+| **Testes de Carga & Automação** | JavaScript (k6 v0.56.0) / PowerShell | Scripts de carga ES6, aquisição de token OIDC Keycloak (`auth-helper.js`) e runner |
 
 ---
 
@@ -1024,6 +1034,19 @@ dotnet run --project src/FleetOps.Api
 dotnet test
 ```
 
+### 6. Busca Semântica Local no Código (Python & LanceDB)
+A ferramenta em Python permite pesquisar semanticamente em métodos C#, classes e ADRs 100% offline:
+```bash
+# Instalar dependências da ferramenta vetorial
+pip install -r tools/vector-search/requirements.txt
+
+# Indexar o repositório em banco vetorial local (.vector-db/)
+python -m tools.vector_search.index
+
+# Realizar busca semântica por similaridade de cosseno
+python -m tools.vector_search.search "outbox skip locked"
+```
+
 ---
 
 ## 27. Configurações e Variáveis de Ambiente
@@ -1040,6 +1063,16 @@ As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobr
 | `POSTGRES_PASSWORD` | `fleetops_dev_secret` | Senha do banco de dados local |
 | `RABBITMQ_PORT` | `5672` | Porta de conexão AMQP |
 | `RABBITMQ_MGMT_PORT` | `15672` | Porta da interface web de gestão do RabbitMQ |
+| `RABBITMQ_USER` | `guest` | Usuário de autenticação do broker |
+| `RABBITMQ_PASSWORD` | `guest` | Senha de autenticação do broker |
+| `KEYCLOAK_PORT` | `8080` | Porta do Keycloak exposta no host |
+| `KEYCLOAK_ADMIN` | `admin` | Administrador padrão do Keycloak (dev) |
+| `KEYCLOAK_ADMIN_PASSWORD` | `admin` | Senha do administrador do Keycloak (dev) |
+| `Jwt__Authority` | `http://localhost:8080/realms/fleetops` | URL pública canônica do realm OIDC no Keycloak |
+| `Jwt__ValidIssuer` | `http://localhost:8080/realms/fleetops` | Emissor canônico aceito nos tokens JWT (`iss`) |
+| `Jwt__MetadataAddress` | `http://keycloak:8080/realms/fleetops/.well-known/openid-configuration` | Backchannel de descoberta JWKS (rede Docker) |
+| `Jwt__Audience` | `fleetops-api` | Audiência esperada nos access tokens (`aud`) |
+| `Jwt__RequireHttpsMetadata` | `false` (dev) / `true` (prod) | Exigência de transporte seguro HTTPS |
 
 > [!CAUTION]
 > As credenciais documentadas em `.env.example` são estritamente para uso em ambiente de desenvolvimento local. Em ambientes produtivos, segredos devem ser injetados via gerenciador de chaves seguro (ex: Azure Key Vault, AWS Secrets Manager ou Kubernetes Secrets). A API possui lógica *fail-fast* que encerra a inicialização imediatamente caso a connection string esteja ausente.
@@ -1052,6 +1085,8 @@ As configurações utilizam o mecanismo padrão do ASP.NET Core, permitindo sobr
 - **Por que Transactional Outbox em vez de publicação direta?** Publicar diretamente no RabbitMQ durante o request HTTP gera risco de perda de mensagens em falhas de rede pós-commit. O Outbox unifica estado e evento na mesma transação ACID relacional.
 - **Por que At-least-once com Consumidor Idempotente?** Nenhum protocolo de rede garante *exactly-once* ponta a ponta sem custo proibitivo de throughput. A combinação de reentrega e desduplicação por `MessageId` atinge um único efeito de negócio dentro da fronteira transacional auditada sem sobrecarga de consenso distribuído.
 - **Por que PostgreSQL `xmin`?** Evita a necessidade de criar colunas artificiais de controle em cada tabela e aproveita a arquitetura nativa MVCC do PostgreSQL para concorrência otimista.
+- **Por que OpenID Connect / Keycloak em vez de JWT local simétrico?** A abordagem inicial com chave simétrica (ADR-008) exigia que o Resource Server conhecesse o segredo de assinatura e continha um endpoint de emissão acoplado. A migração para OIDC com Keycloak (ADR-016) garante a separação estrita de responsabilidades: o FleetOps opera puramente como Resource Server sem possuir chaves privadas; os tokens são assinados assimetricamente com RS256 e validados dinamicamente via JWKS, viabilizando rotação transparente de chaves, federação com SSO corporativo e conformidade estrita com padrões abertos de segurança.
+- **Por que LanceDB e SentenceTransformers locais em vez de APIs de IA na nuvem?** A ferramenta de busca semântica (`tools/vector-search/`) roda 100% offline no host do desenvolvedor via Python e modelo neural `all-MiniLM-L6-v2` (384 dimensões). Isso elimina custos recorrentes de API, previne vazamento de código-fonte proprietário para terceiros e mantém a autonomia e privacidade do time de engenharia.
 
 ---
 
@@ -1139,7 +1174,7 @@ Decisões fundamentais de arquitetura, concorrência, mensageria, resiliência e
 | [ADR-005](docs/adr/ADR-005-w3c-trace-context.md) | End-to-End W3C Trace Context Propagation Across Async Boundaries | Accepted | Rastreabilidade distribuída contínua HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor |
 | [ADR-006](docs/adr/ADR-006-at-least-once-delivery.md) | Bounded At-Least-Once Delivery Semantics | Accepted | Semântica explícita de entrega com limite finito de retries, DLQ e desduplicação |
 | [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Deduplicação por constraint de PK na mesma transação de negócio |
-| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast em startup sem segredo fallback e isolamento de emissor em produção |
+| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Superseded by ADR-016 | Fail-fast em startup sem segredo fallback e isolamento de emissor em produção |
 | [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Delimitação estrita entre rate limiting local em memória e controle distribuído no gateway |
 | [ADR-010](docs/adr/ADR-010-in-process-rate-limiting.md) | In-Process Fixed Window Rate Limiting with Boundary Demarcation | Accepted | Defesa de recursos no nó com resposta RFC 9457 HTTP 429 e cabeçalho Retry-After |
 | [ADR-011](docs/adr/ADR-011-health-checks-and-dependency-readiness.md) | Health Check Probing Semantics: Live, Ready, and Degraded Dependencies | Accepted | Sondas desacopladas de liveness, readiness e diagnóstico multi-dependência com estado Degraded |
@@ -1147,6 +1182,7 @@ Decisões fundamentais de arquitetura, concorrência, mensageria, resiliência e
 | [ADR-013](docs/adr/ADR-013-load-testing-and-performance-baseline.md) | Empirical Performance Baseline via k6 | Accepted | Baseline reprodutível com k6 em perfis de carga nominal, sustentada e spike |
 | [ADR-014](docs/adr/ADR-014-sli-slo-and-error-budget-framework.md) | Service Level Objectives (SLOs) and Error Budget Framework | Accepted | Framework formal de SLIs/SLOs de latência, disponibilidade e cálculo de Error Budget |
 | [ADR-015](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md) | Capacity Engineering, Domain-Level Workloads, and Performance Boundary Validation | Accepted | Delimitação estrita entre vazão in-memory e capacidade transacional ACID de domínio |
+| [ADR-016](docs/adr/ADR-016-openid-connect-keycloak.md) | OpenID Connect / OAuth 2.0 Resource Server with Keycloak and Asymmetric RS256 Validation | Accepted | Migração para OIDC, validação assimétrica RS256, descoberta dinâmica de JWKS e isolamento de Resource Server |
 
 ---
 
@@ -1224,6 +1260,7 @@ Ambiente de Execução:
 
 Para detalhes exaustivos, telemetria de componentes, análise de gargalos e cálculo de Error Budget:
 - [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
+- [ADR-016 — OpenID Connect and Keycloak Integration](docs/adr/ADR-016-openid-connect-keycloak.md)
 - [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
 
 > [!NOTE]
@@ -1248,13 +1285,13 @@ Itens previstos para iterações futuras no ciclo do produto:
 - [x] **OpenTelemetry & Rastreamento Distribuído:** Exportação OTLP de spans de ponta a ponta correlacionados via W3C `traceparent` (HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumidor) e visualização integrada no Jaeger.
 - [x] **Concorrência de Outbox Multi-Réplica:** Bloqueio defensivo de linha com `FOR UPDATE SKIP LOCKED` para alta escalabilidade horizontal sem lock contention.
 - [x] **Pipeline CI/CD:** Automação de compilação, verificação de formatação de código e suíte de testes com PostgreSQL e RabbitMQ via GitHub Actions.
-- [x] **Formalização Arquitetural, Resiliência e Engenharia de Capacidade:** 15 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas e capacidade sob carga com infraestrutura real (295 testes).
+- [x] **Formalização Arquitetural, Resiliência e Engenharia de Capacidade:** 16 Architecture Decision Records (ADRs) formais e suite de testes de injeção de falhas e capacidade sob carga com infraestrutura real (300 testes).
 - [x] **Métricas Operacionais:** Instrumentação nativa `System.Diagnostics.Metrics.Meter("FleetOps")` aderindo à disciplina estrita de cardinalidade.
 - [x] **Rate Limiting em Memória:** ASP.NET Core Fixed Window rate limiting com RFC 9457 `ProblemDetails` (HTTP 429) e cabeçalho `Retry-After`.
 - [x] **Semântica de Sondas de Saúde:** Separação clara de `/health/live`, `/health/ready` e `/health/dependencies` com relatório de degradação graciosa.
 - [x] **Engenharia de Capacidade de Domínio:** Medição empírica da capacidade transacional de domínio (até 278 RPS) e saturação progressiva sob estresse.
 - [x] **Cadernos Operacionais de Remediação:** Procedimentos SRE para queda do PostgreSQL, queda do RabbitMQ, backlog no Outbox e tratamento de DLQ.
-- [ ] **Integração Externa OIDC:** Provedor federado de identidade com Keycloak ou Auth0.
+- [x] **Integração Externa OIDC:** Resource Server OAuth 2.0 / OpenID Connect federado com Keycloak (RS256, JWKS dinâmico, rotação de chaves e tolerância a falhas do IdP).
 - [ ] **Métricas Prometheus & Dashboards Grafana:** Métricas customizadas de latência de fila, taxas de retry e contadores de mensagens processadas.
 - [ ] **Manifestos Kubernetes:** Helm charts para implantação com StatefulSets para persistência e Horizontal Pod Autoscalers (HPA).
 
@@ -1289,11 +1326,13 @@ Itens previstos para iterações futuras no ciclo do produto:
 | **Message Confirmations** | Publisher Confirms enabled on Outbox Publisher and Consumer (formal broker acknowledgement) |
 | **Concurrency Control** | PostgreSQL Unique Constraints + Optimistic Concurrency via `xmin` (`xid` system column) |
 | **Error Handling** | RFC 9457 `ProblemDetails` sanitized with zero credential, SQL, or stack trace leaks |
-| **Runtime Defense** | In-Process Per-Instance Rate Limiting (Fixed Window: 100 req/60s, QueueLimit 0) with RFC 9457 (HTTP 429) & `Retry-After` |
-| **Metrics & Observability** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) with bounded cardinality |
-| **Automated Testing** | 295 automated tests (166 unit tests + 129 integration and resilience tests) |
-| **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Jaeger) |
+| **Proteção de Runtime** | Rate Limiting em memória por instância (Fixed Window: 100 req/60s, QueueLimit 0) com RFC 9457 (HTTP 429) & `Retry-After` |
+| **Métricas & Observabilidade** | System.Diagnostics.Metrics (`fleetops.http.*`, `fleetops.outbox.*`, `fleetops.consumer.*`) with bounded cardinality |
+| **Automated Testing** | 300 automated tests (166 unit tests + 134 integration and resilience tests) |
+| **Containerization** | Multi-stage Dockerfile running as non-root (`$APP_UID`) + Docker Compose (API, Postgres, RabbitMQ, Keycloak, Jaeger) |
 | **API Contract & Health** | OpenAPI 3.1 (`/openapi/v1.json`), Liveness (`/health/live`), Readiness (`/health/ready`), Dependencies (`/health/dependencies`) |
+| **Engineering Tools** | 100% offline local semantic code search in Python (LanceDB + SentenceTransformers `all-MiniLM-L6-v2`) for C# and ADRs |
+| **Load Testing & Automation** | k6 in JavaScript (ES6 `auth-helper.js` with Keycloak OIDC token acquisition via Password Grant) + PowerShell runner |
 
 ---
 
@@ -1988,9 +2027,12 @@ FleetOps API operates strictly as an **OAuth 2.0 / OpenID Connect Resource Serve
 ### Cryptographic & Protocol Architecture
 - **IdP-Issued RS256 Tokens:** Keycloak signs access tokens using asymmetric **RS256 (RSA-2048)** keys.
 - **Dynamic JWKS Discovery:** The API dynamically fetches Keycloak's OpenID Connect discovery document (`/.well-known/openid-configuration`) and public signing keys (`/protocol/openid-connect/certs`). Seamless key rotation is handled via automatic JWKS refresh.
+- **Metadata Backchannel vs Canonical Public Issuer:** In Docker/Compose environments, the API validates the public canonical issuer (`Jwt:ValidIssuer: http://localhost:8080/realms/fleetops`), while retrieving discovery metadata and public keys through the Docker internal network backchannel (`Jwt:MetadataAddress: http://keycloak:8080/realms/fleetops/.well-known/openid-configuration`), preventing DNS hairpinning issues.
+- **JWKS Caching & IdP Fault Tolerance:** The Resource Server caches public keys in memory. If Keycloak is temporarily restarted or partitioned after boot, the API continues validating authenticated tokens signed with cached keys. Rotated keys (`kid`) trigger dynamic public key refreshes.
 - **Strict Validations:** The API strictly validates digital signatures, canonical issuer (`iss`), audience (`aud: fleetops-api`), lifetime (`exp`), and enforces a tight `ClockSkew` (1 minute).
 - **Startup Fail-Fast:** Missing `Jwt:Authority` or `Jwt:Audience` configuration values trigger immediate application startup failure.
 - **Deterministic Role Mapping:** Client roles are extracted exclusively from `resource_access.fleetops-api.roles` and mapped to ASP.NET Core `ClaimTypes.Role`, preventing privilege escalation.
+- **JavaScript k6 Load Test Automation (`load-tests/auth-helper.js`):** Benchmark suites written in JavaScript use `acquireToken()` to obtain OIDC Bearer tokens via Password Grant from Keycloak (`manager@fleetops.local`), allowing realistic high-throughput testing with genuine cryptographic RS256 token validation.
 
 ### Recommended Client Flows (OAuth 2.0 / OIDC)
 1. **Interactive Client Applications (Web/Mobile):** **Authorization Code Flow with PKCE**.
@@ -2100,13 +2142,16 @@ FleetOps provides orchestrator-ready diagnostic probes:
 
 ```text
 fleetops/
-├── compose.yaml                      # Multi-container orchestration (API, PostgreSQL, RabbitMQ, Jaeger)
+├── compose.yaml                      # Multi-container orchestration (API, PostgreSQL, RabbitMQ, Keycloak, Jaeger)
 ├── Dockerfile                        # Multi-stage .NET 10 build (non-root $APP_UID)
 ├── docs/                             # Deep-dive engineering documentation
-│   ├── adr/                          # 15 Architecture Decision Records (ADR-001 through ADR-015)
+│   ├── adr/                          # 16 Architecture Decision Records (ADR-001 through ADR-016)
 │   ├── performance/                  # Empirical capacity and saturation reports (Sprint P2)
 │   └── runbooks/                     # 4 operational incident remediation runbooks (SRE)
-├── load-tests/                       # k6 benchmark suites (Health, Domain, Stress, RateLimit)
+├── keycloak/                         # Keycloak realm configuration and export (realm-export.json)
+├── load-tests/                       # k6 benchmark suites in JavaScript (auth-helper.js, profiles) + PowerShell runner
+├── tools/                            # Engineering and developer tooling
+│   └── vector-search/                # Local semantic code search in Python (LanceDB + SentenceTransformers)
 ├── .dockerignore                     # Build context exclusions
 ├── .editorconfig                     # Code analysis and formatting standards
 ├── .env.example                      # Default environment configuration template
@@ -2121,25 +2166,25 @@ fleetops/
 │   └── FleetOps.Api/                 # Thin controllers, Auth, ProblemDetails, OpenAPI 3.1, Health Probes, OTel
 └── tests/
     ├── FleetOps.UnitTests/           # 166 unit tests (Domain, Application, Architecture)
-    └── FleetOps.IntegrationTests/    # 129 integration tests (Postgres, RabbitMQ, Outbox Concurrency, Auth API, W3C Tracing)
+    └── FleetOps.IntegrationTests/    # 134 integration tests (Postgres, RabbitMQ, Outbox Concurrency, OIDC/Keycloak, W3C Tracing)
 ```
 
 ---
 
 ## 23. Testing
 
-FleetOps includes **295 automated tests** executing with 100% pass rate:
+FleetOps includes **300 automated tests** executing with 100% pass rate:
 
 ```text
 Suite Execution Summary:
   FleetOps.UnitTests.dll:        166 Passed (0 Failed, 0 Skipped)
-  FleetOps.IntegrationTests.dll: 129 Passed (0 Failed, 0 Skipped)
-  Total:                         295 Passed across all suites
+  FleetOps.IntegrationTests.dll: 134 Passed (0 Failed, 0 Skipped)
+  Total:                         300 Passed across all suites
 ```
 
 ### Key Test Categories
 - **Architecture Validation Tests:** Reflectively verifies that `Domain` and `Application` have no forbidden references (`AspNetCore`, `EntityFrameworkCore`, `Npgsql`, `RabbitMQ`, `StackExchange.Redis`, `MediatR`). Verifies that all controller actions and use case methods propagate `CancellationToken` and return `Task`.
-- **Authentication & RBAC Tests (`AuthApiTests`):** Validates real cryptographic token handling via `JwtBearerHandler` (expired tokens, wrong signing key, untrusted issuer/audience, payload tampering), 401 Unauthorized for unauthenticated access, and 403 Forbidden for insufficient roles (e.g. `Driver` attempting to register vehicles).
+- **Authentication & RBAC Tests (`AuthApiTests` & `KeycloakLiveIntegrationTests`):** Validates OAuth 2.0 / OpenID Connect Resource Server enforcement of RS256 asymmetric JWT tokens issued by Keycloak via dynamic JWKS discovery. Covers valid tokens with role claims mapping (`Admin`, `FleetManager`, `Dispatcher`, `Driver`), expired tokens, tampered signatures, untrusted keys, issuer/audience mismatches, dynamic JWKS key rotation without service restart, and Resource Server offline resilience with cached keys. Includes 7 live E2E tests executed against a real Keycloak 26.1 container in CI.
 - **Distributed Tracing Tests (`TracingPropagationTests`):** Automated runtime verification via `ActivityListener` of end-to-end W3C trace context propagation (`TraceId`, `SpanId`, `ParentSpanId`, `traceparent`) across `DbContext` &rarr; `OutboxService` &rarr; RabbitMQ &rarr; Consumer.
 - **Outbox Concurrency Tests (`OutboxConcurrencyTests`):** Asserts that parallel instances polling via `FOR UPDATE SKIP LOCKED` partition batches with zero overlap, zero lock contention, and zero duplicate events.
 - **Resilience & Failure Injection Tests (`FailureInjectionTests`):** Empirical failure boundary validation using real PostgreSQL and RabbitMQ: (1) successful RabbitMQ publication with database update failure and idempotent consumer redelivery; (2) abrupt consumer crash post-commit and pre-ACK with broker redelivery (`Redelivered == true`) preserving a single business effect; (3) database transaction rollback on physical constraint violation ensuring in-memory domain event retention and zero committed Outbox messages.
@@ -2210,6 +2255,8 @@ graph TD
 | **Testing Engine** | xUnit 2.9.3 | Unit and integration test runner |
 | **Web Test Host** | Microsoft.AspNetCore.Mvc.Testing 10.0.11 | In-memory API integration testing |
 | **API Docs** | Microsoft.AspNetCore.OpenApi 10.0.11 | OpenAPI 3.1 specification generation |
+| **Local Semantic Search** | Python 3.10+ / LanceDB 0.38 / SentenceTransformers 5.2 | Offline vector search over C# code and ADRs (`all-MiniLM-L6-v2` model) |
+| **Load Testing & Automation** | JavaScript (k6 v0.56.0) / PowerShell | ES6 load test scripts, Keycloak OIDC token acquisition (`auth-helper.js`), and runner |
 
 ---
 
@@ -2262,6 +2309,19 @@ dotnet run --project src/FleetOps.Api
 dotnet test
 ```
 
+### 6. Local Semantic Code Search (Python & LanceDB)
+Search through C# methods, domain classes, and ADRs 100% offline via local vector embeddings:
+```bash
+# Install vector search dependencies
+pip install -r tools/vector-search/requirements.txt
+
+# Index the codebase and documentation (.vector-db/)
+python -m tools.vector_search.index
+
+# Execute cosine similarity semantic query
+python -m tools.vector_search.search "outbox skip locked"
+```
+
 ---
 
 ## 27. Configuration
@@ -2276,6 +2336,16 @@ dotnet test
 | `POSTGRES_PASSWORD` | `fleetops_dev_secret` | PostgreSQL development password |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
 | `RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ Management Web UI port |
+| `RABBITMQ_USER` | `guest` | RabbitMQ broker username |
+| `RABBITMQ_PASSWORD` | `guest` | RabbitMQ broker password |
+| `KEYCLOAK_PORT` | `8080` | Host port for Keycloak IdP |
+| `KEYCLOAK_ADMIN` | `admin` | Default Keycloak admin user (dev) |
+| `KEYCLOAK_ADMIN_PASSWORD` | `admin` | Default Keycloak admin password (dev) |
+| `Jwt__Authority` | `http://localhost:8080/realms/fleetops` | Keycloak realm public base URL |
+| `Jwt__ValidIssuer` | `http://localhost:8080/realms/fleetops` | Expected canonical token issuer (`iss`) |
+| `Jwt__MetadataAddress` | `http://keycloak:8080/realms/fleetops/.well-known/openid-configuration` | Internal Docker discovery backchannel |
+| `Jwt__Audience` | `fleetops-api` | Expected access token audience (`aud`) |
+| `Jwt__RequireHttpsMetadata` | `false` (dev) / `true` (prod) | Enforces HTTPS metadata in production |
 
 > [!CAUTION]
 > Credentials documented in `.env.example` are strictly intended for local development. In production environments, secrets must be injected via secure key vaults (e.g., Azure Key Vault, AWS Secrets Manager, or Kubernetes Secrets). The API implements *fail-fast* logic that immediately terminates startup if the connection string or signing keys are absent.
@@ -2288,6 +2358,8 @@ dotnet test
 - **Why Transactional Outbox?** Publishing directly to a broker during HTTP request processing introduces dual-write hazards. Outbox ensures database state and event persistence are committed atomically.
 - **Why At-least-once with Idempotency?** Exactly-once message delivery across distributed networks is a physical impossibility without severe distributed locking penalties. Bounded at-least-once delivery coupled with `MessageId` deduplication achieves a single business effect within the audited transaction boundary without distributed locks.
 - **Why PostgreSQL `xmin`?** Leverages PostgreSQL's native MVCC tracking without adding artificial version columns to tables.
+- **Why OpenID Connect / Keycloak instead of symmetric local JWT?** The legacy symmetric approach (ADR-008) required the Resource Server to hold signing secrets and issue tokens. Migrating to OIDC with Keycloak (ADR-016) enforces strict separation of concerns: FleetOps acts purely as a Resource Server without private keys; tokens are signed asymmetrically (RS256) and verified dynamically via JWKS, enabling zero-downtime key rotation, enterprise SSO federation, and adherence to cloud security standards.
+- **Why local LanceDB and SentenceTransformers instead of cloud AI APIs?** The semantic search tool (`tools/vector-search/`) runs 100% offline on the developer's workstation using Python and `all-MiniLM-L6-v2` (384 dimensions). This prevents recurring API token costs, eliminates proprietary source code leakage to cloud vendors, and ensures complete engineering privacy and speed.
 
 ---
 
@@ -2375,7 +2447,7 @@ Formal Architecture Decision Records documenting engineering decisions, problem 
 | [ADR-005](docs/adr/ADR-005-w3c-trace-context.md) | End-to-End W3C Trace Context Propagation Across Async Boundaries | Accepted | Continuous distributed tracing HTTP &rarr; Outbox &rarr; RabbitMQ &rarr; Consumer |
 | [ADR-006](docs/adr/ADR-006-at-least-once-delivery.md) | Bounded At-Least-Once Delivery Semantics | Accepted | Explicit bounded delivery semantics with finite retries, DLQ, and deduplication |
 | [ADR-007](docs/adr/ADR-007-consumer-idempotency.md) | Consumer Idempotency and Single Business Effect Boundary | Accepted | Primary-key deduplication within the audited business transaction boundary |
-| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Accepted | Fail-fast startup validation with no insecure secret fallbacks |
+| [ADR-008](docs/adr/ADR-008-jwt-over-external-idp.md) | Self-Contained JWT Bearer Authentication for Autonomous Service Boundaries | Superseded by ADR-016 | Fail-fast startup validation with no insecure secret fallbacks |
 | [ADR-009](docs/adr/ADR-009-api-rate-limiting-strategy.md) | Application-Level Rate Limiting Strategy and Gateway Offloading | Accepted | Strict demarcation between in-memory local limits and edge/gateway distributed control |
 | [ADR-010](docs/adr/ADR-010-in-process-rate-limiting.md) | In-Process Fixed Window Rate Limiting with Boundary Demarcation | Accepted | Node-level resource defense with RFC 9457 429 and Retry-After header |
 | [ADR-011](docs/adr/ADR-011-health-checks-and-dependency-readiness.md) | Health Check Probing Semantics: Live, Ready, and Degraded Dependencies | Accepted | Decoupled liveness, readiness, and degraded multi-dependency diagnostics |
@@ -2383,6 +2455,7 @@ Formal Architecture Decision Records documenting engineering decisions, problem 
 | [ADR-013](docs/adr/ADR-013-load-testing-and-performance-baseline.md) | Empirical Performance Baseline via k6 | Accepted | Automated reproducible load, sustained, and spike profiles without fantasy benchmarks |
 | [ADR-014](docs/adr/ADR-014-sli-slo-and-error-budget-framework.md) | Service Level Objectives (SLOs) and Error Budget Framework | Accepted | Mathematically grounded SLIs/SLOs covering latency, availability, and processing delay |
 | [ADR-015](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md) | Capacity Engineering, Domain-Level Workloads, and Performance Boundary Validation | Accepted | Relational domain transaction capacity boundaries and empirical saturation engineering |
+| [ADR-016](docs/adr/ADR-016-openid-connect-keycloak.md) | OpenID Connect / OAuth 2.0 Resource Server with Keycloak and Asymmetric RS256 Validation | Accepted | Migration to OIDC, asymmetric RS256 validation, dynamic JWKS discovery, and Resource Server isolation |
 
 ---
 
@@ -2460,6 +2533,7 @@ Host Environment:
 
 For exhaustive details, component telemetry, bottleneck analysis, and Error Budget calculations:
 - [ADR-015 — Capacity Engineering and Performance Validation](docs/adr/ADR-015-capacity-engineering-and-performance-validation.md)
+- [ADR-016 — OpenID Connect and Keycloak Integration](docs/adr/ADR-016-openid-connect-keycloak.md)
 - [P2 Capacity & Operational Proof Report](docs/performance/P2-CAPACITY-REPORT.md)
 
 > [!NOTE]
@@ -2484,13 +2558,13 @@ Planned future enhancements:
 - [x] **OpenTelemetry & Distributed Tracing:** End-to-end W3C `traceparent` context propagation across HTTP, Transactional Outbox, RabbitMQ, and Idempotent Consumers with Jaeger UI.
 - [x] **Multi-Replica Outbox Concurrency:** `FOR UPDATE SKIP LOCKED` row-level partitioning for high-scale horizontal pod autoscaling.
 - [x] **CI/CD Automation:** GitHub Actions CI workflow with clean containerized PostgreSQL and RabbitMQ execution.
-- [x] **Formal Architecture & Failure Engineering:** 15 formal ADRs and real-infrastructure failure injection integration test suite (295 tests).
+- [x] **Formal Architecture & Failure Engineering:** 16 formal ADRs and real-infrastructure failure injection integration test suite (300 tests).
 - [x] **Operational Metrics:** Native `System.Diagnostics.Metrics.Meter("FleetOps")` instrumentation adhering to strict cardinality discipline.
 - [x] **In-Process Rate Limiting:** ASP.NET Core Fixed Window rate limiting with RFC 9457 `ProblemDetails` (HTTP 429) and `Retry-After`.
 - [x] **Health Probing Semantics:** Clean separation of `/health/live`, `/health/ready`, and `/health/dependencies` with graceful degradation reporting.
 - [x] **Domain Capacity Engineering:** Empirically measured domain transactional capacity (up to 278 RPS) and progressive stress saturation.
 - [x] **Operational Runbooks:** SRE procedures for PostgreSQL outages, RabbitMQ broker downtime, outbox backlogs, and DLQ handling.
-- [ ] **External OIDC Integration:** Federated identity integration with Keycloak or Auth0.
+- [x] **External OIDC Integration:** Federated OAuth 2.0 / OpenID Connect Resource Server with Keycloak (RS256, dynamic JWKS discovery, key rotation, and IdP offline tolerance).
 - [ ] **Prometheus Exporter & Grafana Dashboards:** Pre-built dashboards for outbox latency, retry rates, and consumer throughput.
 - [ ] **Kubernetes Manifests:** Production Helm charts with StatefulSet storage configurations and HPA rules.
 
