@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using FleetOps.Api.Contracts.Vehicles;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 public class AuthApiTests : IClassFixture<FleetOpsApiFactory>
@@ -301,8 +302,7 @@ public class AuthApiTests : IClassFixture<FleetOpsApiFactory>
 
         var newKeyId = "rotated-key-2";
         var newRsaKey = _factory.Authority.RotateKey(newKeyId);
-        _factory.RequestConfigurationRefresh();
-        await Task.Delay(1100);
+        await _factory.RequestConfigurationRefreshAsync();
 
         var tokenB = _factory.CreateValidOidcToken(
             username: "manager_key_b",

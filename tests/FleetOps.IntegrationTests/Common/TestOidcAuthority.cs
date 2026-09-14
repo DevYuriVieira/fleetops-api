@@ -17,6 +17,7 @@ public sealed class TestOidcAuthority : IDisposable
     private readonly List<(string KeyId, RSA RsaKey)> _publishedKeys = new();
     private bool _isAvailable = true;
 
+    public int CertsRequestCount;
     public string Authority { get; }
     public string Audience { get; }
     public RSA PrimaryKey { get; private set; }
@@ -164,6 +165,7 @@ public sealed class TestOidcAuthority : IDisposable
 
             if (path.EndsWith("/protocol/openid-connect/certs", StringComparison.OrdinalIgnoreCase))
             {
+                Interlocked.Increment(ref _authority.CertsRequestCount);
                 var keysList = new List<object>();
 
                 foreach (var (kid, rsaKey) in _authority._publishedKeys)

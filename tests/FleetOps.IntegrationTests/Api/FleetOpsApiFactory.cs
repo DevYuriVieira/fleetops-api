@@ -138,11 +138,26 @@ public class FleetOpsApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             tamperSignature: tamperSignature);
     }
 
-    public void RequestConfigurationRefresh()
+    public async Task RequestConfigurationRefreshAsync()
     {
         var options = Services.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
             .Get(JwtBearerDefaults.AuthenticationScheme);
-        options.ConfigurationManager?.RequestRefresh();
+        var httpClient = Authority.CreateHttpClient();
+        var newConfigManager = new Microsoft.IdentityModel.Protocols.ConfigurationManager<Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfiguration>(
+            $"{Authority.Authority}/.well-known/openid-configuration",
+            new Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfigurationRetriever(),
+            new Microsoft.IdentityModel.Protocols.HttpDocumentRetriever(httpClient) { RequireHttps = false })
+        {
+            RefreshInterval = TimeSpan.FromSeconds(1)
+        };
+
+        options.ConfigurationManager = newConfigManager;
+        await newConfigManager.GetConfigurationAsync(CancellationToken.None);
+    }
+
+    public void RequestConfigurationRefresh()
+    {
+        RequestConfigurationRefreshAsync().GetAwaiter().GetResult();
     }
 
 
