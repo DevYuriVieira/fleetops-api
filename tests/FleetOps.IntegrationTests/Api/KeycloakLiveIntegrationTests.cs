@@ -23,17 +23,20 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
         _client = factory.CreateClient();
     }
 
-    private static async Task<bool> IsKeycloakAvailableAsync()
+    private static async Task EnsureKeycloakAvailableAsync()
     {
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
         try
         {
             var response = await httpClient.GetAsync($"{KeycloakBaseUrl}/realms/{Realm}/.well-known/openid-configuration");
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode)
+            {
+                Assert.Fail($"Keycloak live IdP is unreachable or returned {(int)response.StatusCode} at '{KeycloakBaseUrl}'. Live E2E tests require a running Keycloak instance.");
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            Assert.Fail($"Keycloak live IdP is unreachable at '{KeycloakBaseUrl}': {ex.Message}. Live E2E tests require a running Keycloak instance.");
         }
     }
 
@@ -69,10 +72,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_AdminUser_IsAuthorizedOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         await _factory.ResetDatabaseAsync();
 
@@ -96,10 +96,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_FleetManagerUser_IsAuthorizedOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         await _factory.ResetDatabaseAsync();
 
@@ -123,10 +120,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_MultiRoleUser_IsAuthorizedOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         await _factory.ResetDatabaseAsync();
 
@@ -150,10 +144,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_DispatcherUser_Receives403ForbiddenOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         var token = await RequestKeycloakAccessTokenAsync("dispatcher@fleetops.local");
 
@@ -175,10 +166,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_DriverUser_Receives403ForbiddenOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         var token = await RequestKeycloakAccessTokenAsync("driver@fleetops.local");
 
@@ -200,10 +188,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_NoRoleUser_Receives403ForbiddenOnVehicles()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         var token = await RequestKeycloakAccessTokenAsync("norole@fleetops.local");
 
@@ -225,10 +210,7 @@ public class KeycloakLiveIntegrationTests : IClassFixture<KeycloakLiveApiFactory
     [Fact]
     public async Task LiveKeycloak_InvalidPassword_FailsAtTokenEndpoint()
     {
-        if (!await IsKeycloakAvailableAsync())
-        {
-            return;
-        }
+        await EnsureKeycloakAvailableAsync();
 
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         var tokenEndpoint = $"{KeycloakBaseUrl}/realms/{Realm}/protocol/openid-connect/token";
