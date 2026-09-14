@@ -52,6 +52,7 @@ jobs:
         run: |
           docker run -d --name keycloak \
             -p 8080:8080 \
+            -p 9000:9000 \
             -e KEYCLOAK_ADMIN=admin \
             -e KEYCLOAK_ADMIN_PASSWORD=admin \
             -v ${{ github.workspace }}/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro \
@@ -62,7 +63,7 @@ jobs:
         run: |
           echo "Waiting for Keycloak to become healthy..."
           for i in {1..60}; do
-            if curl -s -f http://127.0.0.1:8080/health/ready; then
+            if curl -s -f http://127.0.0.1:8080/realms/fleetops/.well-known/openid-configuration; then
               echo "Keycloak is ready!"
               exit 0
             fi

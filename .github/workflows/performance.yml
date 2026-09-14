@@ -58,6 +58,31 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Start Keycloak IdP
+        run: |
+          docker run -d --name keycloak \
+            -p 8080:8080 \
+            -p 9000:9000 \
+            -e KEYCLOAK_ADMIN=admin \
+            -e KEYCLOAK_ADMIN_PASSWORD=admin \
+            -v ${{ github.workspace }}/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro \
+            quay.io/keycloak/keycloak:26.1.0 \
+            start-dev --import-realm --health-enabled=true
+
+      - name: Wait for Keycloak Readiness
+        run: |
+          echo "Waiting for Keycloak to become healthy..."
+          for i in {1..60}; do
+            if curl -s -f http://127.0.0.1:8080/realms/fleetops/.well-known/openid-configuration; then
+              echo "Keycloak is ready!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Keycloak failed to become ready in time."
+          docker logs keycloak
+          exit 1
+
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -88,7 +113,10 @@ jobs:
           ConnectionStrings__DefaultConnection: "Host=127.0.0.1;Port=5432;Database=fleetops_bench;Username=postgres;Password=postgres;"
           RabbitMQ__Host: "127.0.0.1"
           RabbitMQ__Port: "5672"
-          Jwt__SecretKey: "FleetOps_Super_Secret_Jwt_Signing_Key_2026_Minimum_256_Bits!"
+          Jwt__Authority: "http://127.0.0.1:8080/realms/fleetops"
+          Jwt__Audience: "fleetops-api"
+          Jwt__RequireHttpsMetadata: "false"
+          KEYCLOAK_URL: "http://127.0.0.1:8080"
           RateLimiting__PermitLimit: "10000"
           RateLimiting__WindowSeconds: "60"
         run: |
