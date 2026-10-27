@@ -12,10 +12,10 @@
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-000000?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![CI](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml/badge.svg)](https://github.com/DevYuriVieira/fleetops-api/actions/workflows/ci.yml)
 [![Automated Tests](https://img.shields.io/badge/Tests-300%20Passing-brightgreen?logo=xunit&logoColor=white)](#23-testing)
-[![Production Gate](https://img.shields.io/badge/Production%20Gate-Approved-success)](#30-production-gate)
+[![Quality Gate](https://img.shields.io/badge/Quality%20Gate-Verified-success)](#30-production-gate)
 
-**Production-Grade Fleet & Logistics Backend Engine**  
-*A distributed, event-driven fleet operations REST API built for transactional consistency, resilience, and asynchronous processing.*
+**Fleet & Logistics Backend Engine — Architectural Study & Reference Project**  
+*A distributed, event-driven fleet operations REST API built with .NET 10 to demonstrate enterprise patterns: Clean Architecture, Transactional Outbox, RabbitMQ, PostgreSQL, and Keycloak OIDC.*
 
 [🇧🇷 Português](#-português) &nbsp;•&nbsp; [🇺🇸 English](#-english)
 
@@ -57,7 +57,7 @@
 
 ## 1. Visão Geral (Overview)
 
-O **FleetOps API** é um backend de gerenciamento de frotas e logística de alta confiabilidade projetado para operar em cenários reais com alta exigência de consistência transacional e tolerância a falhas distribuídas.
+O **FleetOps API** é um projeto de estudo e referência técnica de backend para gerenciamento de frotas e logística em .NET 10, projetado para demonstrar e validar padrões corporativos em cenários reais com alta exigência de consistência transacional, resiliência e tolerância a falhas distribuídas.
 
 Diferente de aplicações CRUD tradicionais, o FleetOps foi construído para resolver problemas críticos do ciclo operacional logístico:
 - **Gestão Integrada de Ativos:** Operação de veículos, motoristas, entregas, rotas e ordens de serviço mecânico mantendo fronteiras transacionais limpas.
@@ -735,7 +735,7 @@ Erros e exceções gerados na aplicação são interceptados centralizadamente p
 | `RateLimitExceeded` | `429 Too Many Requests` | "Too Many Requests" | Limite de requisições por nó atingido (cabeçalho `Retry-After: 1`) |
 | Exceções Não Tratadas | `500 Internal Server Error` | "Internal Server Error" | Mensagem genérica sanitizada com rastreio via `traceId` |
 
-> [!SECURITY]
+> [!IMPORTANT]
 > Respostas de erro 500 **jamais** vazam nomes de tabelas, consultas SQL, versões do driver Npgsql, stack traces ou dados de credenciais da string de conexão. O detalhamento completo permanece gravado exclusivamente nos logs internos do servidor associado ao identificador `traceId`.
 
 ---
@@ -891,6 +891,7 @@ fleetops/
 
 ---
 
+<a id="23-testing"></a>
 ## 23. Estratégia de Testes Automatizados (Testing)
 
 O FleetOps possui **300 testes automatizados** com 100% de aprovação, garantindo a solidez do sistema em todas as camadas:
@@ -939,10 +940,12 @@ graph TD
         PG["postgres (:5432 &rarr; :5432)"]
         RMQ["rabbitmq (:5672 &rarr; :5672, :15672 &rarr; :15672)"]
         Jaeger["jaeger (:16686 &rarr; :16686, :4317 &rarr; :4317)"]
+        Keycloak["keycloak (:8080 &rarr; :8080)"]
     end
     
     API -->|"depends_on: service_healthy"| PG
     API -->|"depends_on: service_healthy"| RMQ
+    API -->|"depends_on: service_healthy"| Keycloak
     API -->|"depends_on: service_started"| Jaeger
     PG --- VolPG[("Volume: fleetops-postgres-data")]
     RMQ --- VolRMQ[("Volume: fleetops-rabbitmq-data")]
@@ -951,10 +954,11 @@ graph TD
 ### Destaques de Engenharia de Containers
 - **Multi-Stage Build:** Separa o estágio de compilação SDK (`dotnet/sdk:10.0`) da imagem de runtime final (`dotnet/aspnet:10.0`), reduzindo a superfície de ataque e tamanho da imagem.
 - **Usuário Não-Privilegiado:** Executa no container sob o usuário nativo `$APP_UID` (não-root).
-- **Ordenação de Inicialização:** A API declara `depends_on: service_healthy` para o PostgreSQL e RabbitMQ, e `service_started` para o Jaeger, impedindo falhas de inicialização prematuras.
+- **Ordenação de Inicialização:** A API declara `depends_on: service_healthy` para o PostgreSQL, RabbitMQ e Keycloak, e `service_started` para o Jaeger, impedindo falhas de inicialização prematuras.
 - **Healthchecks Nativos:**
   - PostgreSQL avaliado via `pg_isready -U fleetops_dev -d fleetops`.
   - RabbitMQ avaliado via `rabbitmq-diagnostics -q ping`.
+  - Keycloak avaliado via probe `/health/ready` na porta 9000.
   - API avaliada via `curl -f http://localhost:8080/health/ready`.
 
 ---
@@ -1101,19 +1105,20 @@ Uma das marcas de maturidade de engenharia de software é a busca pela simplicid
 
 ---
 
-## 30. Revisão Técnica e Production Gate
+<a id="30-production-gate"></a>
+## 30. Revisão Técnica e Quality Gate (AI-Assisted Architecture Review)
 
-O projeto foi submetido a uma auditoria técnica adversarial independente cobrindo integridade transacional, tolerância a falhas distribuídas, segurança de endpoints e sanitização de dados:
+Como parte de um projeto de estudo aprofundado, a base de código foi submetida a uma revisão técnica rigorosa assistida por inteligência artificial e verificação de regras arquiteturais, cobrindo integridade transacional, tolerância a falhas distribuídas, segurança de endpoints e sanitização de dados:
 
 ```text
 ==================================================
-           FINAL PRODUCTION GATE REVIEW
+        AI-ASSISTED ARCHITECTURE REVIEW GATE
 ==================================================
   CRITICAL FINDINGS: 0
   HIGH FINDINGS:     0
   MEDIUM FINDINGS:   0
   LOW FINDINGS:      0
-  STATUS:            APPROVED FOR PRODUCTION
+  STATUS:            VERIFIED / PRODUCTION-READY
 ==================================================
 ```
 
@@ -1338,7 +1343,7 @@ Itens previstos para iterações futuras no ciclo do produto:
 
 ## 1. Overview
 
-**FleetOps API** is a high-reliability fleet management and logistics backend engine engineered to operate in production environments demanding strict transactional consistency and distributed fault tolerance.
+**FleetOps API** is an advanced engineering study and architectural reference backend for fleet management and logistics in .NET 10, designed to demonstrate and validate enterprise reliability patterns, transactional consistency, and distributed fault tolerance in real-world scenarios.
 
 Rather than treating the system as a standard CRUD application, FleetOps was deliberately designed to resolve core distributed systems challenges in logistics:
 - **Integrated Fleet Asset Operations:** Managing vehicles, drivers, shipments, routes, and maintenance service orders within well-defined transactional boundaries.
@@ -2018,6 +2023,9 @@ All uncaught exceptions are transformed into RFC 9457 responses by `GlobalExcept
 | `RateLimitExceeded` | `429 Too Many Requests` | "Too Many Requests" | Per-instance fixed-window quota exceeded (`Retry-After: 1` header) |
 | Unhandled Exceptions | `500 Internal Server Error` | "Internal Server Error" | Sanitized generic message correlated by `traceId` |
 
+> [!IMPORTANT]
+> Internal 500 error responses **never** leak database table names, SQL queries, Npgsql driver versions, stack traces, or credentials from connection strings. Exhaustive diagnostic traces remain strictly recorded in internal application server logs correlated by `traceId`.
+
 ---
 
 ## 19. Authentication & Role-Based Access Control (OIDC, Keycloak & RBAC)
@@ -2171,6 +2179,7 @@ fleetops/
 
 ---
 
+<a id="23-testing-en"></a>
 ## 23. Testing
 
 FleetOps includes **300 automated tests** executing with 100% pass rate:
@@ -2217,10 +2226,12 @@ graph TD
         PG["postgres (:5432 &rarr; :5432)"]
         RMQ["rabbitmq (:5672 &rarr; :5672, :15672 &rarr; :15672)"]
         Jaeger["jaeger (:16686 &rarr; :16686, :4317 &rarr; :4317)"]
+        Keycloak["keycloak (:8080 &rarr; :8080)"]
     end
     
     API -->|"depends_on: service_healthy"| PG
     API -->|"depends_on: service_healthy"| RMQ
+    API -->|"depends_on: service_healthy"| Keycloak
     API -->|"depends_on: service_started"| Jaeger
     PG --- VolPG[("Volume: fleetops-postgres-data")]
     RMQ --- VolRMQ[("Volume: fleetops-rabbitmq-data")]
@@ -2229,10 +2240,11 @@ graph TD
 ### Container Engineering Highlights
 - **Multi-Stage Build:** Separates the build stage (`dotnet/sdk:10.0`) from the runtime image (`dotnet/aspnet:10.0`), minimizing container footprint.
 - **Non-Root Execution:** Runs under `$APP_UID` for container security.
-- **Startup Ordering:** API service declares `depends_on: service_healthy` for PostgreSQL and RabbitMQ, and `service_started` for Jaeger.
+- **Startup Ordering:** API service declares `depends_on: service_healthy` for PostgreSQL, RabbitMQ, and Keycloak, and `service_started` for Jaeger.
 - **Native Healthchecks:**
   - PostgreSQL checked via `pg_isready -U fleetops_dev -d fleetops`.
   - RabbitMQ checked via `rabbitmq-diagnostics -q ping`.
+  - Keycloak checked via probe `/health/ready` on port 9000.
   - API checked via `curl -f http://localhost:8080/health/ready`.
 
 ---
@@ -2279,6 +2291,7 @@ cp .env.example .env
 ```
 
 ### 3. Run with Docker Compose
+Start the complete containerized stack (API + PostgreSQL + RabbitMQ + Keycloak + Jaeger):
 ```bash
 docker compose up --build
 ```
@@ -2374,19 +2387,20 @@ FleetOps prioritizes **Correctness > Unnecessary Complexity**:
 
 ---
 
-## 30. Production Gate
+<a id="30-production-gate-en"></a>
+## 30. Technical Review & Quality Gate (AI-Assisted Architecture Review)
 
-The codebase was audited under an independent adversarial review verifying transactional boundaries, fault tolerance, security, and exception sanitization:
+As part of an in-depth reference study, the codebase was evaluated under a rigorous AI-assisted architectural review and automated quality gate verifying transactional boundaries, fault tolerance, security, and exception sanitization:
 
 ```text
 ==================================================
-           FINAL PRODUCTION GATE REVIEW
+        AI-ASSISTED ARCHITECTURE REVIEW GATE
 ==================================================
   CRITICAL FINDINGS: 0
   HIGH FINDINGS:     0
   MEDIUM FINDINGS:   0
   LOW FINDINGS:      0
-  STATUS:            APPROVED FOR PRODUCTION
+  STATUS:            VERIFIED / PRODUCTION-READY
 ==================================================
 ```
 
